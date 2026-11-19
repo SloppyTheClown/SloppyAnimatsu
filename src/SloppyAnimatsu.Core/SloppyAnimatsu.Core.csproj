@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\default-preferences.slopa" LogicalName="SloppyAnimatsu.Core.Resources.default-preferences.slopa" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- AppLog's test entry point takes an explicit folder and a small size limit. -->
+    <InternalsVisibleTo Include="SloppyAnimatsu.Tests" />
+  </ItemGroup>
+
+</Project>

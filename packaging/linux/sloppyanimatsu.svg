@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Sloppy Animatsu: a clown nose inside the Spinner X/Y/Z ring (packaging/icon.py draws the same). -->
+  <defs><filter id="soft"><feGaussianBlur stdDeviation="3"/></filter></defs>
+  <rect x="1" y="1" width="254" height="254" rx="51" fill="#141416" stroke="#3c3c42" stroke-width="3"/>
+  <path d="M137.1 24.4 A104 104 0 0 1 222.3 172.0" fill="none" stroke="#f24040" stroke-width="26"/>
+  <path d="M213.2 187.7 A104 104 0 0 1 42.8 187.7" fill="none" stroke="#4de64d" stroke-width="26"/>
+  <path d="M33.7 172.0 A104 104 0 0 1 118.9 24.4" fill="none" stroke="#4d80ff" stroke-width="26"/>
+  <circle cx="128" cy="128" r="62" fill="#960a16"/>
+  <circle cx="124" cy="124" r="56" fill="#e11e28"/>
+  <ellipse cx="104" cy="102" rx="15" ry="12" fill="#ffebeb" fill-opacity="0.92" filter="url(#soft)"/>
+</svg>

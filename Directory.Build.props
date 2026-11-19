@@ -1,0 +1,20 @@
+<Project>
+
+  <!--
+    One version for every project. The packages, the exe's file version and Help > About all read
+    it; bump it here before running packaging\package.ps1 or packaging\package.sh.
+  -->
+  <PropertyGroup>
+    <Version>0.3.0-alpha</Version>
+    <Product>Sloppy Animatsu</Product>
+    <Description>Rigs, skins, animates and exports .akt scenes</Description>
+    <Company>SloppyAnimatsu</Company>
+    <Authors>SloppyAnimatsu</Authors>
+    <Copyright>Copyright (c) 2026 SloppyTheClown and contributors</Copyright>
+    <NeutralLanguage>en</NeutralLanguage>
+    <Deterministic>true</Deterministic>
+    <!-- Release builds record source paths as /_/... instead of the local checkout path. -->
+    <ContinuousIntegrationBuild Condition="'$(Configuration)' == 'Release'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

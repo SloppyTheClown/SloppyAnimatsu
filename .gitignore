@@ -1,0 +1,24 @@
+bin/
+obj/
+.vs/
+*.user
+*.bak
+TestResults/
+# Sample scenes are user data: never commit them.
+*.akt
+*.aknm
+*.fbx
+*.slopa
+# ...except the shipped default preferences and the frozen test preferences.
+!src/SloppyAnimatsu.Core/Resources/default-preferences.slopa
+!tests/SloppyAnimatsu.Tests/TestData/preferences.akt
+# The packaged artifacts of packaging\package.ps1 / package.sh, and the local release folder.
+dist/
+release/
+# Local scratch and test-runner state.
+.tmp-run/
+testrunner-status*.json
+testrunner-status*.tmp
+
+# Python bytecode from packaging/icon.py.
+__pycache__/

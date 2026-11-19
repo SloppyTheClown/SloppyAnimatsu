@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "about": "Which test classes a changed source file can affect, for tools/TestRunner --changed. Globs are repo-relative and use / ; ** is any depth and * any part of one name. An unmatched source file runs every test, so a missing entry costs time, never coverage. Tests: [\"*\"] means every test.",
+  "features": [
+    {
+      "name": "character placement and save/export progress",
+      "sources": [
+        "src/SloppyAnimatsu.Core/WriteProgress.cs",
+        "src/SloppyAnimatsu.Core/Model/MeshSkin.cs",
+        "src/SloppyAnimatsu.Core/Fbx/**",
+        "src/SloppyAnimatsu.Rendering/PoseEditing.cs",
+        "src/SloppyAnimatsu.Rendering/ScenePose.cs"
+      ],
+      "tests": [
+        "CharacterPlacementTests",
+        "WriteProgressTests"
+      ]
+    },
+    {
+      "name": "rename tool, pickable toggle, retarget joint bank, ground grid",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/RenameTool.cs",
+        "src/SloppyAnimatsu.Core/Model/Outliner.cs",
+        "src/SloppyAnimatsu.Core/Model/RetargetSession.cs",
+        "src/SloppyAnimatsu.Core/Model/Scene.cs",
+        "src/SloppyAnimatsu.Rendering/SceneRenderer.cs"
+      ],
+      "tests": [
+        "RenameToolTests"
+      ]
+    },
+    {
+      "name": "file format and scenes",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Akt/**",
+        "src/SloppyAnimatsu.Core/Aknm/**",
+        "src/SloppyAnimatsu.Core/Model/AktImport.cs"
+      ],
+      "tests": [
+        "AktFormatTests",
+        "AktSampleTests",
+        "AktStructSchemaTests",
+        "AknmTests",
+        "AktImportTests",
+        "BlendshapeTests",
+        "MeshLayerTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "animation",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/Animation.cs",
+        "src/SloppyAnimatsu.Core/Model/AnimationBank.cs",
+        "src/SloppyAnimatsu.Core/Model/Audio.cs",
+        "src/SloppyAnimatsu.Core/Model/Curveboard.cs",
+        "src/SloppyAnimatsu.Core/Model/MeshFreeze.cs",
+        "src/SloppyAnimatsu.Core/Model/CurveboardLayout.cs",
+        "src/SloppyAnimatsu.Core/Model/Cyclemaker.cs",
+        "src/SloppyAnimatsu.Core/Model/IKSolver.cs",
+        "src/SloppyAnimatsu.Core/Model/KeyClipboard.cs",
+        "src/SloppyAnimatsu.Core/Model/KeyEditing.cs",
+        "src/SloppyAnimatsu.Core/Model/KeySpaceConverter.cs",
+        "src/SloppyAnimatsu.Core/Model/Mirroring.cs",
+        "src/SloppyAnimatsu.Core/Model/PoseEvaluator.cs",
+        "src/SloppyAnimatsu.Core/Model/CompensateScaleKeys.cs",
+        "src/SloppyAnimatsu.Core/Model/RestPoseEditing.cs",
+        "src/SloppyAnimatsu.Core/Model/CharacterBank.cs",
+        "src/SloppyAnimatsu.Core/Model/Retargeting.cs",
+        "src/SloppyAnimatsu.Core/Model/RetargetNames.cs",
+        "src/SloppyAnimatsu.Core/Model/RetargetMappingStore.cs",
+        "src/SloppyAnimatsu.Core/Model/RetargetSession.cs",
+        "src/SloppyAnimatsu.Core/Model/ReverseFootSolver.cs",
+        "src/SloppyAnimatsu.Core/Model/SpaceEditing.cs",
+        "src/SloppyAnimatsu.Core/Model/TimelineLayout.cs"
+      ],
+      "tests": [
+        "AnimationBankTests",
+        "AudioTests",
+        "CurveboardTests",
+        "CurveboardLayoutTests",
+        "CyclemakerTests",
+        "IKEditingTests",
+        "IKTests",
+        "KeyCopyPasteTests",
+        "KeyEditingTests",
+        "KeyTimelineEditingTests",
+        "MirroringTests",
+        "MultiSelectionEditingTests",
+        "PoseEditingTests",
+        "CharacterBankTests",
+        "RestPoseEditingTests",
+        "RetargetingTests",
+        "CompensateScaleKeyTests",
+        "RetargetSessionTests",
+        "RetargetMappingTests",
+        "ReverseFootEditingTests",
+        "ReverseFootTests",
+        "ScaleEditingTests",
+        "GizmoHandleTests",
+        "SpaceSwitchingTests",
+        "SpinnerTests",
+        "TransformExtrasTests",
+        "TrackCreationTests",
+        "TimelineLayoutTests",
+        "AktImportTests",
+        "AknmTests"
+      ]
+    },
+    {
+      "name": "rig and skin",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/AutoRigger.cs",
+        "src/SloppyAnimatsu.Core/Model/AutoRiggerSession.cs",
+        "src/SloppyAnimatsu.Core/Model/Mesh.cs",
+        "src/SloppyAnimatsu.Core/Model/MeshSkin.cs",
+        "src/SloppyAnimatsu.Core/Model/RigEditing.cs",
+        "src/SloppyAnimatsu.Core/Model/SkinEditing.cs",
+        "src/SloppyAnimatsu.Core/Model/SkinWorkshop.cs",
+        "src/SloppyAnimatsu.Core/Model/VertexSelection.cs",
+        "src/SloppyAnimatsu.Core/Model/WorldComposition.cs"
+      ],
+      "tests": [
+        "AutoRiggerTests",
+        "AutoRiggerSessionTests",
+        "ControllerCreationTests",
+        "RigEditingTests",
+        "RigEditSnapshotTests",
+        "SkinBindingTests",
+        "SkinningTests",
+        "SkinWorkshopTests",
+        "VertexSelectionTests",
+        "OutlinerTests",
+        "MeshLayerTests",
+        "FbxExportTests",
+        "FbxEngineExportTests",
+        "FbxImportTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "camera and view layouts",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/CameraAnimation.cs",
+        "src/SloppyAnimatsu.Core/Model/SceneViews.cs"
+      ],
+      "tests": [
+        "CameraTests",
+        "ViewLayoutTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "application shell",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/DockLayout.cs",
+        "src/SloppyAnimatsu.Core/Model/FloatingLayout.cs",
+        "src/SloppyAnimatsu.Core/Model/PanelCatalogue.cs",
+        "src/SloppyAnimatsu.Core/Model/Outliner.cs",
+        "src/SloppyAnimatsu.Core/Model/OutlinerDrag.cs",
+        "src/SloppyAnimatsu.Core/Model/OutlinerStyle.cs",
+        "src/SloppyAnimatsu.Core/Model/Preferences.cs",
+        "src/SloppyAnimatsu.Core/Model/Shortcuts.cs",
+        "src/SloppyAnimatsu.Core/Model/Autosave.cs",
+        "src/SloppyAnimatsu.Core/Model/SceneFactory.cs",
+        "src/SloppyAnimatsu.Core/Model/SceneDocuments.cs",
+        "src/SloppyAnimatsu.Core/Model/Welcome.cs"
+      ],
+      "tests": [
+        "DockLayoutTests",
+        "FloatingLayoutTests",
+        "OutlinerTests",
+        "OutlinerDragTests",
+        "OutlinerStyleTests",
+        "OutlinerTreeCommandTests",
+        "PreferencesAndShortcutsTests",
+        "SceneLifecycleTests",
+        "DocumentSetTests",
+        "ViewLayoutTests",
+        "CharacterBankTests",
+        "MenuModelTests",
+        "HotkeysTests",
+        "WelcomeTests",
+        "DialogLayoutTests"
+      ]
+    },
+    {
+      "name": "dialog rules",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/PreferencesSession.cs",
+        "src/SloppyAnimatsu.Core/Model/PreferenceCatalogue.cs",
+        "src/SloppyAnimatsu.Core/Model/PreferencePageLayout.cs",
+        "src/SloppyAnimatsu.Core/Model/ShortcutSession.cs",
+        "src/SloppyAnimatsu.Core/Model/ShortcutKeyMap.cs",
+        "src/SloppyAnimatsu.Core/Model/RestPosePrompt.cs",
+        "src/SloppyAnimatsu.Core/Model/SpaceSwitchChoice.cs",
+        "src/SloppyAnimatsu.Core/Model/TextPrompt.cs",
+        "src/SloppyAnimatsu.Core/Model/DialogLayout.cs"
+      ],
+      "tests": [
+        "PreferencesSessionTests",
+        "PreferencePageLayoutTests",
+        "ShortcutSessionTests",
+        "DialogPromptTests",
+        "DialogLayoutTests",
+        "PreferencesAndShortcutsTests"
+      ]
+    },
+    {
+      "name": "menu model",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/MenuModel.cs",
+        "src/SloppyAnimatsu.Core/Model/Hotkeys.cs"
+      ],
+      "tests": [
+        "MenuModelTests",
+        "HotkeysTests",
+        "OutlinerTreeCommandTests",
+        "PreferencesAndShortcutsTests",
+        "ViewLayoutTests"
+      ]
+    },
+    {
+      "name": "picker",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/PickerGroups.cs",
+        "src/SloppyAnimatsu.Core/Model/PickerRows.cs"
+      ],
+      "tests": [
+        "PickerGroupTests",
+        "PickerRowTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "FBX",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Fbx/**"
+      ],
+      "tests": [
+        "FbxExportTests",
+        "FbxEngineExportTests",
+        "FbxImportTests",
+        "MeshLayerTests",
+        "AknmTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "blendshapes",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/Blendshapes.cs",
+        "src/SloppyAnimatsu.Core/Model/BlendshapeSetUp.cs"
+      ],
+      "tests": [
+        "BlendshapeTests",
+        "BlendshapeSetUpTests",
+        "AnimationBankTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "material texture swaps",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Akt/MaterialSchema.cs",
+        "src/SloppyAnimatsu.Core/Model/MaterialTextures.cs",
+        "src/SloppyAnimatsu.Cli/Program.Material.cs"
+      ],
+      "tests": [
+        "MaterialTexturesTests",
+        "AktImportTests",
+        "SceneModelTests"
+      ]
+    },
+    {
+      "name": "scene objects (shared by nearly every test)",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/AktMath.cs",
+        "src/SloppyAnimatsu.Core/Model/Objects3D.cs",
+        "src/SloppyAnimatsu.Core/Model/Scene.cs",
+        "src/SloppyAnimatsu.Core/Model/SceneModel.cs",
+        "src/SloppyAnimatsu.Core/Model/SceneObject.cs"
+      ],
+      "tests": [
+        "*"
+      ]
+    },
+    {
+      "name": "viewer helpers used by the tests",
+      "sources": [
+        "src/SloppyAnimatsu.Rendering/**"
+      ],
+      "tests": [
+        "AnimationBankTests",
+        "CameraTests",
+        "CurveboardTests",
+        "CyclemakerTests",
+        "KeyCopyPasteTests",
+        "KeyTimelineEditingTests",
+        "MirroringTests",
+        "MultiSelectionEditingTests",
+        "OutlinerTests",
+        "PickingTests",
+        "PoseEditingTests",
+        "RestPoseEditingTests",
+        "RigEditSnapshotTests",
+        "ScaleEditingTests",
+        "GizmoHandleTests",
+        "SkinningTests",
+        "SkinWorkshopTests",
+        "ViewportInputTests",
+        "ViewportPickTests",
+        "DecoratorSizesTests",
+        "SpaceSwitchingTests",
+        "SpinnerTests",
+        "TransformExtrasTests",
+        "TrackCreationTests",
+        "ViewLayoutTests",
+        "AxisCubeTests"
+      ]
+    },
+    {
+      "name": "log files",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Diagnostics/**"
+      ],
+      "tests": [
+        "AppLogTests"
+      ]
+    },
+    {
+      "name": "packaging",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Packaging/**",
+        "tools/PackageTool/**"
+      ],
+      "tests": [
+        "PackagingTests"
+      ]
+    }
+  ]
+}
+

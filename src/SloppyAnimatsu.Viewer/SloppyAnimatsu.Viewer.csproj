@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SloppyAnimatsu.Rendering\SloppyAnimatsu.Rendering.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.6" />
+    <!-- The X11 options type: the Linux software-GL opt-in of Program.cs sets its GLX blacklist. -->
+    <PackageReference Include="Avalonia.X11" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.6" />
+    <!-- ImageDecoding.cs uses SkiaSharp directly; it arrives through Avalonia.Skia, named here so
+         the dependency is visible and survives an Avalonia update. -->
+    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The window icon; Windows also uses it for the exe's icon, through ApplicationIcon. -->
+    <AvaloniaResource Include="Assets/app.ico" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+</Project>
+
+
