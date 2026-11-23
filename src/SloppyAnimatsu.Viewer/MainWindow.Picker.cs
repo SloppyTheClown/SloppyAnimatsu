@@ -32,15 +32,104 @@ public sealed partial class MainWindow
     /// <summary>The layer the list is filtered by: the timeline's stack, and none in the rigging context.</summary>
     private AnimStack? PickerLayer => _animation != null ? _timeline.ActiveStack : null;
 
+    // The Picker's icons, drawn on a 12x12 grid (the Scene window's glyph size, so its IK, RF and
+    // blendshape glyphs sit beside them unchanged).
+
+    /// <summary>The colour every Picker icon is drawn in: the IK/RF stamps' yellow.</summary>
+    private static readonly IBrush PickerIconBrush = PickerStampBrush;
+
+    /// <summary>The same yellow, faded: the half of the figure a side stamp does not pick.</summary>
+    private static readonly IBrush PickerIconDimBrush = new SolidColorBrush(Color.FromRgb(0xF2, 0xC1, 0x4E), 0.28);
+
+    /// <summary>The all-blendshapes stamp: three small heads (circles) in a triangle.</summary>
+    private const string PickerHeadsIcon =
+        "M3.2,1.2 A2.2,2.2 0 1 0 3.21,1.2 Z M8.8,1.2 A2.2,2.2 0 1 0 8.81,1.2 Z M6,6.4 A2.2,2.2 0 1 0 6.01,6.4 Z";
+
+    /// <summary>The face's outline circle, inset by half the dotted stroke so it lines up with the filled edge.</summary>
+    private const string PickerFaceOutline = "M6,1.2 A4.8,4.8 0 1 0 6.01,1.2 Z";
+
+    /// <summary>
+    /// A face-direction stamp: <see cref="PickerFaceIcon"/> filled on the <paramref name="shown"/>
+    /// half (the direction it picks) and only a dotted outline on the other half.
+    /// </summary>
+    private static Control PickerHalfFace(Rect shown, Rect dotted)
+    {
+        var canvas = new Grid { Width = 12.0, Height = 12.0 };
+        canvas.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Data = Geometry.Parse(PickerFaceIcon),
+            Fill = PickerIconBrush,
+            Clip = new RectangleGeometry(shown)
+        });
+        canvas.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Data = Geometry.Parse(PickerFaceOutline),
+            Stroke = PickerIconBrush,
+            StrokeThickness = 0.8,
+            // Dash and gap are in stroke widths: about 1.4 px on, 1.2 px off at the stamp's 12 px.
+            StrokeDashArray = new Avalonia.Collections.AvaloniaList<double> { 1.8, 1.5 },
+            Clip = new RectangleGeometry(dotted)
+        });
+        return new Viewbox { Width = 12.0, Height = 12.0, Child = canvas, IsHitTestVisible = false };
+    }
+
+    // The halves of the 12x12 face, for PickerHalfFace.
+    private static readonly Rect PickerTopHalf = new(0.0, 0.0, 12.0, 6.0);
+    private static readonly Rect PickerBottomHalf = new(0.0, 6.0, 12.0, 6.0);
+    private static readonly Rect PickerLeftHalf = new(0.0, 0.0, 6.0, 12.0);
+    private static readonly Rect PickerRightHalf = new(6.0, 0.0, 6.0, 12.0);
+
+    /// <summary>A standing figure's left half on screen (half head, one arm, one leg), split at x = 6.</summary>
+    private const string PickerFigureScreenLeft =
+        "M6,0.4 A1.6,1.6 0 0 0 6,3.6 Z M6,4.2 H3.6 L1,7.6 L1.9,8.2 L3.8,6.2 V7.6 L2.8,11.6 H4.3 L5.6,8 H6 Z";
+
+    /// <summary>The figure's right half on screen: <see cref="PickerFigureScreenLeft"/> mirrored about x = 6.</summary>
+    private const string PickerFigureScreenRight =
+        "M6,0.4 A1.6,1.6 0 0 1 6,3.6 Z M6,4.2 H8.4 L11,7.6 L10.1,8.2 L8.2,6.2 V7.6 L9.2,11.6 H7.7 L6.4,8 H6 Z";
+
+    /// <summary>A face: a round head with two eyes and a smile cut out (even-odd fill).</summary>
+    private const string PickerFaceIcon =
+        "M6,0.8 A5.2,5.2 0 1 0 6.01,0.8 Z M4.2,3.6 A0.9,0.9 0 1 0 4.21,3.6 Z M7.8,3.6 A0.9,0.9 0 1 0 7.81,3.6 Z " +
+        "M3.3,7 Q6,10.2 8.7,7 Q6,8.7 3.3,7 Z";
+
+
+    /// <summary>A hammer: a head with a bevelled striking face, and its handle.</summary>
+    private const string PickerHammerIcon = "M1.6,1.4 H8.2 L10.6,2.2 V4.2 L8.2,5 H1.6 Z M5,5 H7 V11.4 H5 Z";
+
+    /// <summary>A 12x12 icon of stacked paths (each with its own brush), scaled to <paramref name="size"/>.</summary>
+    private static Control PickerIcon(double size, params (string Data, IBrush Fill)[] layers)
+    {
+        var canvas = new Grid { Width = 12.0, Height = 12.0 };
+        foreach (var (data, fill) in layers)
+        {
+            canvas.Children.Add(new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(data), Fill = fill });
+        }
+        return new Viewbox { Width = size, Height = size, Child = canvas, IsHitTestVisible = false };
+    }
+
+    /// <summary>
+    /// The hammer (layer-edit mode) icon, tilted 45 degrees: drawn upright it reads as a "T" at
+    /// 10-12 px.
+    /// </summary>
+    private static Control PickerHammer(double size)
+    {
+        Control icon = PickerIcon(size, (PickerHammerIcon, PickerIconBrush));
+        icon.RenderTransform = new RotateTransform(45.0);
+        return icon;
+    }
+
+    /// <summary>A stamp-sized (12 px) Picker icon.</summary>
+    private static Control PickerIcon(params (string Data, IBrush Fill)[] layers) => PickerIcon(12.0, layers);
+
     private readonly ToggleButton _pickerLayerToggle = new()
     {
-        Content = "\u2692",
-        FontSize = 11.0,
+        Content = PickerHammer(12.0),
         Height = 18.0,
         MinHeight = 0.0,
         Padding = new Thickness(0.0),
         HorizontalAlignment = HorizontalAlignment.Stretch,
         HorizontalContentAlignment = HorizontalAlignment.Center,
+        VerticalContentAlignment = VerticalAlignment.Center,
         VerticalAlignment = VerticalAlignment.Center
     };
 
@@ -153,8 +242,7 @@ public sealed partial class MainWindow
         {
             var hammer = new Button
             {
-                Content = "\u2692",
-                FontSize = 10.0,
+                Content = PickerHammer(10.0),
                 Width = 16.0,
                 Height = 16.0,
                 MinWidth = 0.0,

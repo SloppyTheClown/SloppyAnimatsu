@@ -144,13 +144,12 @@ public sealed partial class MainWindow
         bool layerMode = _pickerLayerMode && ReferenceEquals(PickerLayer, item.Stack);
         Button hammer = new Button
         {
-            Content = "⚒",
+            Content = PickerHammer(10.0),
             Width = 16.0,
             Height = 16.0,
             MinWidth = 0.0,
             MinHeight = 0.0,
             Padding = new Thickness(0.0),
-            FontSize = 10.0,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0.0),
             HorizontalContentAlignment = HorizontalAlignment.Center,

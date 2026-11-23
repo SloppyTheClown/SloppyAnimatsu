@@ -154,7 +154,7 @@ public sealed partial class MainWindow
         TextBlock body = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
-            Text = "Working title of SloppyAnimatsu: an animation and rigging tool in C# / .NET 9, inspired by akeytsu.\n\nViewer build " + version + ". It reads and writes .akt scenes, FBX, .aknm and the preferences and shortcut files.\n\n" + log
+            Text = "SloppyAnimatsu: an animation and rigging tool in C# / .NET 9, inspired by akeytsu.\n\nViewer build " + version + ". It reads and writes .akt scenes, FBX, .aknm and the preferences and shortcut files.\n\n" + log
         };
         Button close = new Button
         {

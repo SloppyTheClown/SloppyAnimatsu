@@ -229,21 +229,36 @@ public sealed partial class MainWindow
         grid.Children.Add(layerToggle);
         // The eleven Aux_Pick_Select_* stamps: everything, a side, IK, reverse foot, the
         // blendshape controllers and the four face directions.
-        // IK and RF carry the Scene window's own glyphs (a hand and a boot), drawn yellow.
+        // Every stamp is an icon (the tooltip names it): a figure for all / one side, the Scene
+        // window's own glyphs for IK (a hand), RF (a boot) and blendshapes, a face, and arrows.
         var pickerStamps = new StackPanel { Spacing = 2.0 };
         pickerStamps.Children.Add(PickerStampRow(
-            PickerStamp("All", "Pick every controller", PickerGroup.All),
-            PickerStamp("L", "Pick the left-side controllers (_L / .L)", PickerGroup.LeftSide),
-            PickerStamp("R", "Pick the right-side controllers (_R / .R)", PickerGroup.RightSide),
-            PickerStamp("IK", "Pick the IK controllers", PickerGroup.IK, OutlinerStyle.GlyphOf(OutlinerKind.IkController)),
-            PickerStamp("RF", "Pick the reverse-foot controllers", PickerGroup.ReverseFoot, OutlinerStyle.GlyphOf(OutlinerKind.ReverseFootController))));
+            PickerStamp("Pick every controller", PickerGroup.All,
+                PickerIcon((PickerFigureScreenLeft, PickerIconBrush), (PickerFigureScreenRight, PickerIconBrush))),
+            // The figure faces the viewer, as a picker sheet does: the character's left is the
+            // half on the right of the icon.
+            PickerStamp("Pick the left-side controllers (_L / .L)", PickerGroup.LeftSide,
+                PickerIcon((PickerFigureScreenLeft, PickerIconDimBrush), (PickerFigureScreenRight, PickerIconBrush))),
+            PickerStamp("Pick the right-side controllers (_R / .R)", PickerGroup.RightSide,
+                PickerIcon((PickerFigureScreenLeft, PickerIconBrush), (PickerFigureScreenRight, PickerIconDimBrush))),
+            PickerStamp("Pick the IK controllers", PickerGroup.IK,
+                PickerIcon((OutlinerStyle.GlyphOf(OutlinerKind.IkController), PickerStampBrush))),
+            PickerStamp("Pick the reverse-foot controllers", PickerGroup.ReverseFoot,
+                PickerIcon((OutlinerStyle.GlyphOf(OutlinerKind.ReverseFootController), PickerStampBrush)))));
         pickerStamps.Children.Add(PickerStampRow(
-            PickerStamp("BS", "Pick the blendshape controllers", PickerGroup.Blendshape),
-            PickerStamp("Head", "Pick the blendshape face controllers", PickerGroup.Face),
-            PickerStamp("▲", "Pick the upward blendshape channels", PickerGroup.FaceUp),
-            PickerStamp("▼", "Pick the downward blendshape channels", PickerGroup.FaceDown),
-            PickerStamp("◀", "Pick the leftward blendshape channels", PickerGroup.FaceLeft),
-            PickerStamp("▶", "Pick the rightward blendshape channels", PickerGroup.FaceRight)));
+            PickerStamp("Pick the blendshape controllers", PickerGroup.Blendshape,
+                PickerIcon((PickerHeadsIcon, PickerIconBrush))),
+            PickerStamp("Pick the blendshape face controllers", PickerGroup.Face,
+                PickerIcon((PickerFaceIcon, PickerIconBrush))),
+            // The direction stamps: the face filled on the side they pick, dotted on the other.
+            PickerStamp("Pick the upward blendshape channels", PickerGroup.FaceUp,
+                PickerHalfFace(PickerTopHalf, PickerBottomHalf)),
+            PickerStamp("Pick the downward blendshape channels", PickerGroup.FaceDown,
+                PickerHalfFace(PickerBottomHalf, PickerTopHalf)),
+            PickerStamp("Pick the leftward blendshape channels", PickerGroup.FaceLeft,
+                PickerHalfFace(PickerLeftHalf, PickerRightHalf)),
+            PickerStamp("Pick the rightward blendshape channels", PickerGroup.FaceRight,
+                PickerHalfFace(PickerRightHalf, PickerLeftHalf))));
         Grid.SetRow(pickerStamps, 1);
         grid.Children.Add(pickerStamps);
         Grid.SetRow(_controllers, 2);
@@ -259,25 +274,18 @@ public sealed partial class MainWindow
         return row;
     }
 
-    private Button PickerStamp(string label, string tip, PickerGroup group, string? glyph = null)
+    private Button PickerStamp(string tip, PickerGroup group, Control icon)
     {
         var stamp = new Button
         {
-            Content = glyph == null ? label : new Avalonia.Controls.Shapes.Path
-            {
-                Data = Geometry.Parse(glyph),
-                Fill = PickerStampBrush,
-                Width = 12.0,
-                Height = 12.0,
-                Stretch = Stretch.Uniform
-            },
-            FontSize = 9.0,
+            Content = icon,
             Height = 18.0,
             MinHeight = 0.0,
             Margin = new Thickness(1.0, 0.0),
             Padding = new Thickness(0.0, 0.0),
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Center
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
         };
         ToolTip.SetTip(stamp, tip);
         stamp.Click += delegate

@@ -42,6 +42,7 @@ public class UpdateCheckTests
 
     [Theory]
     [InlineData("0.4.0-alpha", "0.3.0-alpha", 1)]
+    [InlineData("v0.4.1-alpha", "0.4.0-alpha", 1)]
     [InlineData("v0.3.0-alpha", "0.3.0-alpha", 0)]
     [InlineData("0.3.0", "0.3.0-alpha", 1)]
     [InlineData("0.3.0-alpha", "0.3.0", -1)]
