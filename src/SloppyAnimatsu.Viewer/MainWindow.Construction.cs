@@ -624,6 +624,7 @@ public sealed partial class MainWindow
                 _viewport.CaptureNextFrame = true;
                 _viewport.RequestNextFrameRendering();
             }
+            StartupUpdateCheck();
             if (_options.Welcome || Welcome.ShowAtStartup(sceneOnCommandLine, _options.Scripted, Welcome.IsSkipped(_preferences)))
             {
                 await ShowWelcome();

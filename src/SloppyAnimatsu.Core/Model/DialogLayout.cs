@@ -10,6 +10,7 @@ public enum DialogId
     TextPrompt,
     Welcome,
     Retarget,
+    ExportSettings,
 }
 
 /// <summary>
@@ -73,6 +74,21 @@ public enum DialogStop
 
     RetargetRun,
     RetargetCancel,
+
+    /// <summary>One preset button of the Export Settings window, in <see cref="Fbx.FbxExportSettings.Targets"/> order.</summary>
+    ExportPreset,
+
+    /// <summary>The Export Settings window's scene/selection drop-down.</summary>
+    ExportScope,
+
+    /// <summary>One toggle of the Export Settings window, in <see cref="Fbx.FbxExportSettings.Options"/> order.</summary>
+    ExportOption,
+
+    /// <summary>The folder separator text box beside the "Folder path in file names" toggle.</summary>
+    ExportSeparator,
+
+    ExportRun,
+    ExportCancel,
 }
 
 /// <summary>The keys a dialog's layout gives a meaning to.</summary>
@@ -167,6 +183,17 @@ public static class DialogLayout
         DialogStop.RetargetCancel,
     ];
 
+    private static readonly DialogStop[] ExportStops =
+    [
+        .. Enumerable.Repeat(DialogStop.ExportPreset, Fbx.FbxExportSettings.Targets.Count),
+        DialogStop.ExportScope,
+        .. Enumerable.Repeat(DialogStop.ExportOption, Fbx.FbxExportSettings.FolderPathOptionIndex + 1),
+        DialogStop.ExportSeparator,
+        .. Enumerable.Repeat(DialogStop.ExportOption, Fbx.FbxExportSettings.Options.Count - Fbx.FbxExportSettings.FolderPathOptionIndex - 1),
+        DialogStop.ExportRun,
+        DialogStop.ExportCancel,
+    ];
+
     /// <summary>
     /// The stops Tab walks. A preferences page contributes one <see cref="DialogStop.PageValue"/> per
     /// visible row (<paramref name="values"/>), so the order follows the page; a page without a
@@ -182,6 +209,7 @@ public static class DialogLayout
             DialogId.TextPrompt => PromptStops,
             DialogId.Welcome => WelcomeStops(values),
             DialogId.Retarget => RetargetStops,
+            DialogId.ExportSettings => ExportStops,
             _ => Array.Empty<DialogStop>(),
         };
 
@@ -205,6 +233,7 @@ public static class DialogLayout
         DialogId.TextPrompt => DialogStop.PromptText,
         DialogId.Welcome => DialogStop.WelcomeTemplate,
         DialogId.Retarget => DialogStop.RetargetSource,
+        DialogId.ExportSettings => DialogStop.ExportPreset,
         _ => DialogStop.PageList,
     };
 
@@ -249,6 +278,7 @@ public static class DialogLayout
                     DialogId.TextPrompt => InvokeStop(stops, DialogStop.PromptOk),
                     DialogId.Welcome => WelcomeEnter(stops, index),
                     DialogId.Retarget => InvokeStop(stops, DialogStop.RetargetRun),
+                    DialogId.ExportSettings => InvokeStop(stops, DialogStop.ExportRun),
                     _ => DialogKeyAction.None,
                 };
             case DialogKey.Escape:
@@ -261,6 +291,7 @@ public static class DialogLayout
                     DialogId.TextPrompt => InvokeStop(stops, DialogStop.PromptCancel),
                     DialogId.Welcome => DialogKeyAction.Close,
                     DialogId.Retarget => InvokeStop(stops, DialogStop.RetargetCancel),
+                    DialogId.ExportSettings => InvokeStop(stops, DialogStop.ExportCancel),
                     _ => DialogKeyAction.None,
                 };
             default:

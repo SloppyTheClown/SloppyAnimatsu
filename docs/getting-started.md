@@ -25,7 +25,8 @@ status bar. `glxinfo | grep "OpenGL version"` says what the machine offers.
 rights and installs to `C:\Program Files\SloppyAnimatsu` unless you choose another folder; the folder
 is remembered, so running a newer setup later updates that install in place. It adds Start menu and
 desktop shortcuts (both optional) and an entry in *Settings > Apps*, which uninstalls it. For a silent
-install: `setup.exe /S [--dir=<folder>] [--no-shortcuts]`.
+install: `setup.exe /S [--dir=<folder>] [--no-shortcuts]`. Later versions can also be installed from
+inside the viewer with **Help > Check for updates…** (see [Updates](user-guide.md#updates)).
 
 **Portable, from the zip:**
 
@@ -94,7 +95,9 @@ A five-minute tour of the window follows; the panels and the workflows are in
 
 ## The window at a glance
 
-- **Menu bar**: File, Edit, Rig, Keys, Animation, Stack, Context, View, Export, Import, Help.
+- **Menu bar**: File, Edit, Plugins (empty for now), Help. Import and export are on the File menu;
+  the rig, key, animation, stack, context and view commands are reached by their keys (Help >
+  Keyboard shortcuts), the panels and the right-click menus.
 - **Viewport**: the whole window behind the panels; left drag orbits, right drag zooms in (right/up)
   or out (left/down), middle drag pans, the wheel zooms and F frames everything.
 - **Left panels**: Bank (characters and animations) and Scene (the hierarchy panel); in the Rigging
@@ -114,8 +117,8 @@ panel starts on, its order and its saved height - comes from the saved dock layo
 preferences file exists; without one the built-in layout above is used. A resize is written back into
 the saved layout (`preferences.slopa`) when you release the grip, and so are a panel's moved place and
 its folded state when you drop or fold it, so the next start opens the same arrangement.
-**Context > Rigging / Animation** switches the two
-interfaces (Tab).
+Tab (or the context button) switches the two
+interfaces, Rigging and Animation.
 
 ## Opening, saving and autosave
 
@@ -144,8 +147,7 @@ switch brings back that document's undo history, selection, shown character, ani
 interface context and viewport camera, so switching away never loses work. Closing a modified
 document asks whether to save it first; closing the last one starts a fresh empty scene.
 
-Import > Import FBX builds a new document from the file, and Import > Import another scene merges
-into the active one. Saving writes the scene's folder into its `SavePath`, and an FBX import writes the FBX's folder.
+File > Import… builds a new document from an FBX and merges a scene file into the active one. Saving writes the scene's folder into its `SavePath`, and an FBX import writes the FBX's folder.
 
 The scene is autosaved every ten minutes (the interval is a preference) to the `SloppyAnimatsu/Autosave`
 folder in your documents, alternating between two `_autosave_01.slopa`/`_02.slopa` files per open document

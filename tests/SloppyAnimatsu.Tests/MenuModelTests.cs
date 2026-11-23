@@ -24,9 +24,11 @@ public class MenuModelTests
     [Fact]
     public void MenuBar_HasTheExpectedOrderAndEveryTopLevelIsASubmenu()
     {
+        var bar = MenuModel.Bar(new MenuState());
+        Assert.Equal(new[] { "_File", "_Edit", "_Plugins", "_Help" }, Headers(bar));
         var menu = MenuModel.Build(new MenuState());
         Assert.Equal(
-            new[] { "_File", "_Edit", "_Rig", "_Keys", "_Animation", "_Stack", "_Context", "_View", "_Export", "_Import", "_Help" },
+            new[] { "_File", "_Edit", "_Plugins", "_Help", "_Rig", "_Keys", "_Animation", "_Stack", "_Context", "_View" },
             Headers(menu));
         Assert.All(menu, entry => Assert.Equal(MenuEntryKind.Submenu, entry.Kind));
         Assert.All(menu, entry => Assert.Null(entry.Command));
@@ -34,21 +36,42 @@ public class MenuModelTests
     }
 
     [Fact]
+    public void PluginsMenu_SaysNoPluginIsInstalled()
+    {
+        var plugins = Menu(new MenuState(), "_Plugins");
+        var row = Assert.Single(plugins.Children);
+        Assert.Equal(MenuModel.NoPlugins, row.Header);
+        Assert.False(row.Enabled);
+    }
+
+    [Fact]
+    public void ImportAndExport_AreSingleFileRows()
+    {
+        var file = Menu(new MenuState(), "_File");
+        Assert.Equal(MenuCommand.Import, Row(file, "_Import…").Command);
+        Assert.True(Row(file, "_Import…").Enabled);
+        Assert.Equal(MenuCommand.Export, Row(file, "_Export…").Command);
+        Assert.False(Row(file, "_Export…").Enabled);
+        Assert.True(Row(Menu(new MenuState { HasScene = true }, "_File"), "_Export…").Enabled);
+    }
+
+    [Fact]
     public void FileMenu_HasTheFileCommandsAndTheRecentPlaceholder()
     {
         var file = Menu(new MenuState(), "_File");
         Assert.Equal(
-            new[] { "_New scene", "_Open…", "_Close file", "_Save", "Save _As…", "", "_Recent scenes", "", "_Preferences…" },
+            new[] { "_New scene", "_Open…", "_Close file", "_Save", "Save _As…", "", "_Import…", "_Export…", "", "_Recent scenes", "", "_Preferences…" },
             Headers(file.Children));
         Assert.Equal(
             new MenuCommand?[]
             {
                 MenuCommand.NewScene, MenuCommand.Open, MenuCommand.CloseFile, MenuCommand.Save,
-                MenuCommand.SaveAs, null, null, null, MenuCommand.Preferences,
+                MenuCommand.SaveAs, null, MenuCommand.Import, MenuCommand.Export, null, null, null, MenuCommand.Preferences,
             },
             file.Children.Select(entry => entry.Command).ToArray());
         Assert.Equal(MenuEntryKind.Separator, file.Children[5].Kind);
-        Assert.Equal(MenuEntryKind.Separator, file.Children[7].Kind);
+        Assert.Equal(MenuEntryKind.Separator, file.Children[8].Kind);
+        Assert.Equal(MenuEntryKind.Separator, file.Children[10].Kind);
         // Close file is only usable while a document is open.
         Assert.False(file.Children[2].Enabled);
         Assert.True(Row(Menu(new MenuState { HasDocument = true }, "_File"), "_Close file").Enabled);
@@ -228,6 +251,13 @@ public class MenuModelTests
         Assert.Equal(new[] { "Remove Key(s)", "Copy Key(s)", "", "Create Fade-in", "Create Fade-out" }, Headers(onKey));
         Assert.Equal(new[] { MenuCommand.DeleteKeys, MenuCommand.CopyKeys, MenuCommand.FadeIn, MenuCommand.FadeOut },
             onKey.Where(e => e.Kind == MenuEntryKind.Item).Select(e => e.Command!.Value));
+
+        // A fade the selected keys already have is offered for removal instead.
+        var faded = MenuModel.TimelineKeyItems(new MenuState { HasStack = true, SelectedKeyCount = 1, SelectedKeysHaveFadeIn = true });
+        Assert.Equal(new[] { "Remove Key(s)", "Copy Key(s)", "", "Remove Fade-in", "Create Fade-out" }, Headers(faded));
+        var both = MenuModel.TimelineKeyItems(new MenuState { HasStack = true, SelectedKeyCount = 1, SelectedKeysHaveFadeIn = true, SelectedKeysHaveFadeOut = true });
+        Assert.Equal(new[] { MenuCommand.DeleteKeys, MenuCommand.CopyKeys, MenuCommand.RemoveFadeIn, MenuCommand.RemoveFadeOut },
+            both.Where(e => e.Kind == MenuEntryKind.Item).Select(e => e.Command!.Value));
         Assert.All(onKey.Where(e => e.Kind == MenuEntryKind.Item), e => Assert.True(e.Enabled, e.Header));
     }
 

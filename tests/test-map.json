@@ -133,6 +133,7 @@
         "OutlinerTests",
         "MeshLayerTests",
         "FbxExportTests",
+        "FbxExportSettingsTests",
         "FbxEngineExportTests",
         "FbxImportTests",
         "SceneModelTests"
@@ -182,6 +183,15 @@
         "HotkeysTests",
         "WelcomeTests",
         "DialogLayoutTests"
+      ]
+    },
+    {
+      "name": "update check",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Updates/**"
+      ],
+      "tests": [
+        "UpdateCheckTests"
       ]
     },
     {
@@ -239,6 +249,7 @@
       ],
       "tests": [
         "FbxExportTests",
+        "FbxExportSettingsTests",
         "FbxEngineExportTests",
         "FbxImportTests",
         "MeshLayerTests",

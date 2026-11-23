@@ -110,7 +110,7 @@ public class DialogLayoutTests
     public void EveryDialog_OpensOnItsFirstStop()
     {
         var dialogs = Enum.GetValues<DialogId>();
-        Assert.Equal(7, dialogs.Length);
+        Assert.Equal(8, dialogs.Length);
         foreach (var dialog in dialogs)
         {
             var stops = DialogLayout.Stops(dialog, 2);

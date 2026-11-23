@@ -30,6 +30,26 @@ public sealed class OutlinerView : UserControl
     private static readonly IBrush DropMarkBrush = new SolidColorBrush(Color.FromRgb(90, 170, 255));
     private static readonly IBrush DropFillBrush = new SolidColorBrush(Color.FromArgb(50, 90, 170, 255));
     private readonly Dictionary<Grid, Border> _dropMarks = [];
+
+    /// <summary>Each row's export mark (<see cref="ExportHighlight"/>), lit while <see cref="ExportFilter"/> takes its object.</summary>
+    private readonly Dictionary<Grid, Border> _exportMarks = [];
+
+    private Func<Object3D, bool>? _exportFilter;
+
+    /// <summary>
+    /// The objects an open Export Settings window would write (null = no highlight). Setting it lights
+    /// or clears every row's export mark at once.
+    /// </summary>
+    public Func<Object3D, bool>? ExportFilter
+    {
+        get => _exportFilter;
+        set
+        {
+            _exportFilter = value;
+            foreach (var (view, mark) in _exportMarks)
+                ExportHighlight.Apply(mark, value != null && _byView.TryGetValue(view, out var o) && value(o));
+        }
+    }
     private Grid? _markedRow;
     // The other rows of a multi-selection: lighter than the current row.
     private static readonly IBrush SecondarySelectionBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
@@ -234,6 +254,7 @@ public sealed class OutlinerView : UserControl
         _byView.Clear();
         _labels.Clear();
         _dropMarks.Clear();
+        _exportMarks.Clear();
         _markedRow = null;
         _names.Clear();
         _cameraButtons.Clear();
@@ -663,6 +684,12 @@ public sealed class OutlinerView : UserControl
         };
         Grid.SetColumnSpan(mark, 4);
         _dropMarks[grid] = mark;
+        // Lit while an open Export Settings window would write this object; behind the row's content.
+        var exportMark = ExportHighlight.NewMark();
+        Grid.SetColumnSpan(exportMark, 4);
+        ExportHighlight.Apply(exportMark, _exportFilter?.Invoke(o) == true);
+        _exportMarks[grid] = exportMark;
+        grid.Children.Add(exportMark);
         grid.Children.Add(tree);
         grid.Children.Add(mark);
         Grid.SetColumn(show, 1);

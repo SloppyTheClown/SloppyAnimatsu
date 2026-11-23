@@ -708,6 +708,17 @@ public sealed class Preferences
     }
 
     /// <summary>
+    /// <c>CGeneralPreferences.AutoCheckUpdates</c>: whether the viewer looks for a newer release at
+    /// startup. A file without the member checks.
+    /// </summary>
+    public bool AutoCheckUpdates => _general?["AutoCheckUpdates"] switch
+    {
+        bool value => value,
+        byte raw => raw != 0,
+        _ => true,
+    };
+
+    /// <summary>
     /// The skeleton preferences that drive orient and Create Joint
     /// <c>JointAim</c>/<c>JointUp</c> (0/1/2 =
     /// X/Z/Y), the <c>JointAimInt</c>/<c>JointUpInt</c> 0..5 spinner values with their negative
@@ -952,6 +963,30 @@ public sealed class Preferences
         {
             EnsureAnimBankPage();
             Page(AnimBankPageClass)?.Set(AnimBankReversedMember, value);
+        }
+    }
+
+    // ---- The Export Settings window's choices (Fbx.FbxExportSettings as one flags word).
+
+    public const string ExportPageClass = "CExportPreferences";
+    public const string ExportFlagsMember = "ExportFlags";
+    public const string ExportSeparatorMember = "ExportFolderSeparator";
+
+    /// <summary>The Export Settings window's last choices; the default target's base settings when unset.</summary>
+    public Fbx.FbxExportSettings ExportSettings
+    {
+        get => Fbx.FbxExportSettings.FromFlags(Page(ExportPageClass)?.Get(ExportFlagsMember) is uint flags
+            ? flags : Fbx.FbxExportSettings.DefaultFlags) with
+        {
+            FolderSeparator = Page(ExportPageClass)?.Get(ExportSeparatorMember) is string separator
+                ? separator : Fbx.FbxExportSettings.DefaultFolderSeparator,
+        };
+        set
+        {
+            EnsureOwnPage(ExportPageClass, [(ExportFlagsMember, "uint"), (ExportSeparatorMember, "QString")],
+                page => page.Set(ExportSeparatorMember, Fbx.FbxExportSettings.DefaultFolderSeparator));
+            Page(ExportPageClass)?.Set(ExportFlagsMember, value.ToFlags());
+            Page(ExportPageClass)?.Set(ExportSeparatorMember, value.FolderSeparator ?? "");
         }
     }
 

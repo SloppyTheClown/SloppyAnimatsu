@@ -69,6 +69,8 @@ public sealed partial class MainWindow
         dockPanel2.Children.Add(_contextButton);
         DockPanel.SetDock(_contextLabel, Dock.Right);
         dockPanel2.Children.Add(_contextLabel);
+        // "Update Available v…" (MainWindow.Updates.cs), hidden until a newer release is known.
+        AddUpdateNotice(dockPanel2);
         // The layout button (the app keeps one in the bottom-left corner): resets the panels of
         // both contexts to a preset.
         MenuFlyout layoutMenu = new MenuFlyout();
@@ -185,7 +187,7 @@ public sealed partial class MainWindow
         }
         MenuState state = CurrentMenuState();
         _menuBar.Items.Clear();
-        foreach (MenuEntry item in MenuModel.Build(state))
+        foreach (MenuEntry item in MenuModel.Bar(state))
         {
             _menuBar.Items.Add(ToMenuItem(item));
         }
@@ -296,6 +298,8 @@ public sealed partial class MainWindow
             HasTreeRow = _outliner.ContextRow != null && _outliner.Selected != null,
             TreeRowSkinLocked = _outliner.Selected is Mesh { Skinned: true } treeMesh ? treeMesh.SkinnedMeshIsLocked : null,
             SelectedKeyCount = _timeline.SelectedKeys.Count,
+            SelectedKeysHaveFadeIn = activeStack != null && _timeline.SelectedKeys.Any(k => k >= 0 && k < activeStack.Keys.Count && activeStack.Keys[k].FadeIn != 0),
+            SelectedKeysHaveFadeOut = activeStack != null && _timeline.SelectedKeys.Any(k => k >= 0 && k < activeStack.Keys.Count && activeStack.Keys[k].FadeOut != 0),
             StackCount = _animation?.Stacks.Count ?? 0,
             StackIndex = ((activeStack != null && _animation != null) ? _animation.Stacks.ToList().IndexOf(activeStack) : (-1)),
             CanCycleStep = activeStack != null && KeyEditor.CanCycleStep(activeStack, out string reason),
@@ -685,36 +689,13 @@ public sealed partial class MainWindow
             {
                 AddAnimatedCamera();
             },
-            [MenuCommand.ExportFbxUnbaked] = delegate
+            [MenuCommand.Import] = delegate
             {
-                ExportFbx(baked: false);
+                ImportAny();
             },
-            [MenuCommand.ExportFbxBaked] = delegate
+            [MenuCommand.Export] = delegate
             {
-                ExportFbx(baked: true);
-            },
-            [MenuCommand.ExportFbxForEngine] = delegate(MenuEntry entry)
-            {
-                if (Enum.TryParse<FbxExportPreset>(entry.Argument, out var preset))
-                {
-                    ExportFbx(baked: true, preset);
-                }
-            },
-            [MenuCommand.ExportAknm] = delegate
-            {
-                ExportAknm();
-            },
-            [MenuCommand.ImportFbx] = delegate
-            {
-                ImportFbx();
-            },
-            [MenuCommand.ImportAkt] = delegate
-            {
-                ImportAkt();
-            },
-            [MenuCommand.ImportAknm] = delegate
-            {
-                ImportAknm();
+                ShowExportSettings();
             },
             [MenuCommand.About] = delegate
             {
@@ -727,6 +708,10 @@ public sealed partial class MainWindow
             [MenuCommand.ShowLog] = delegate
             {
                 ShowLogWindow();
+            },
+            [MenuCommand.CheckForUpdates] = async delegate
+            {
+                await CheckForUpdates();
             }
         });
         IReadOnlyList<MenuCommand> readOnlyList = MenuModel.Unhandled(CurrentMenuState(), dictionary.Keys);

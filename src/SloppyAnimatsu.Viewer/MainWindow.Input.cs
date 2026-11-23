@@ -76,6 +76,7 @@ public sealed partial class MainWindow
         SyncSkinToSelection();
         UpdateKeyCommands();
         RefreshMenu();
+        RefreshExportPreview();
         _viewport.RequestNextFrameRendering();
     }
 

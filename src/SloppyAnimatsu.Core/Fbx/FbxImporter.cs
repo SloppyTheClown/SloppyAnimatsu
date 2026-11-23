@@ -13,6 +13,14 @@ public sealed class FbxImportOptions
     public bool Skins { get; init; } = true;
     /// <summary>Read materials and their diffuse textures.</summary>
     public bool Materials { get; init; } = true;
+    /// <summary>
+    /// Re-key spline animation: sample every frame of the file's curves and keep only the frames the
+    /// app's own spline playback needs to stay within a small tolerance of them, instead of one key
+    /// per file key. Makes baked (one key per frame) and engine-fitted files editable and plays
+    /// curves with their own tangents correctly. Layers with stepped or linear keys and additive
+    /// layers keep the file's key times.
+    /// </summary>
+    public bool FitKeys { get; init; } = true;
     /// <summary>Where to look for textures that are not embedded (default: the FBX file's folder).</summary>
     public string? TextureDirectory { get; init; }
     /// <summary>Receives one line per dropped or approximated item.</summary>
@@ -905,7 +913,7 @@ public static class FbxImporter
                 var animationObj = New("CAnimation", UniqueNames.For(parent, name), parent);
                 animationObj.Set("CurrentTime", 0);
 
-                var stacks = new List<(AktObject Obj, AnimStack Wrapper, List<FbxCurveNode> Targets)>();
+                var stacks = new List<(AktObject Obj, AnimStack Wrapper, List<FbxCurveNode> Targets, bool Fitted)>();
                 for (int i = stack.Layers.Count - 1; i >= 0; i--)
                 {
                     var layer = stack.Layers[i];
@@ -917,6 +925,19 @@ public static class FbxImporter
                             if (curve != null)
                                 foreach (long tick in curve.Times) times.Add(Frame(tick));
                     if (times.Count == 0) continue;
+                    bool fit = _options.FitKeys && layer.BlendMode != 0 && Fittable(layerTargets, times);
+                    if (fit)
+                    {
+                        // A fit that saves less than a quarter of the keys keeps the file's own keys:
+                        // they are exact, and on an authored layer they are what the animator set.
+                        var fitted = FitTimes(layerTargets, targets, build, times);
+                        fit = fitted.Count * 4 <= times.Count * 3;
+                        if (fit)
+                        {
+                            Warn($"animation '{stack.Name}' layer '{layer.Name}': re-keyed {times.Count} key times to {fitted.Count}");
+                            times = new SortedSet<int>(fitted);
+                        }
+                    }
                     times.Add(times.Max + 1);
 
                     var stackObj = New("CAnimStack", UniqueNames.For(animationObj, layer.Name), animationObj);
@@ -928,13 +949,13 @@ public static class FbxImporter
                     var timeArray = new List<object?>();
                     foreach (int t in times) timeArray.Add(StackKey(t));
                     stackObj.Set("TimeArray", timeArray);
-                    stacks.Add((stackObj, (AnimStack)_model.Wrap(stackObj), layerTargets));
+                    stacks.Add((stackObj, (AnimStack)_model.Wrap(stackObj), layerTargets, fit));
                 }
 
                 if (stacks.Count == 0) continue;
                 animationObj.Set("StackList", stacks.Select(s => new AktReference(s.Obj)).ToList());
                 animationObj.Set("CurrentStack", new AktReference(stacks[0].Obj));
-                foreach (var (_, wrapper, layerTargets) in stacks) FillStack(wrapper, layerTargets, targets, build);
+                foreach (var (_, wrapper, layerTargets, fitted) in stacks) FillStack(wrapper, layerTargets, targets, build, fitted);
             }
 
             controller.CurrentAnimation = controller.Animations.FirstOrDefault();
@@ -951,7 +972,7 @@ public static class FbxImporter
         }
 
         private void FillStack(AnimStack stack, List<FbxCurveNode> curveNodes,
-                               Dictionary<long, AktObject> targets, CharacterBuild build)
+                               Dictionary<long, AktObject> targets, CharacterBuild build, bool fitted = false)
         {
             // An additive FBX layer holds the layer's own delta, which is exactly the .akt key value;
             // an override layer holds the absolute local transform (fbx-export.md "Animation").
@@ -978,16 +999,7 @@ public static class FbxImporter
                 for (int k = 0; k < keys.Count && k < stackKeys.Count; k++)
                 {
                     if (keys[k] is not TransformKey key) continue;
-                    long ticks = Ticks(stackKeys[k].Time);
-                    var translation = nodes.TryGetValue("Lcl Translation", out var tn) ? tn.Evaluate(ticks) : baseTransform.Translation;
-                    var rotation = nodes.TryGetValue("Lcl Rotation", out var rn) ? RotationFromEuler(rn.Evaluate(ticks)) : baseTransform.Rotation;
-                    var scale = nodes.TryGetValue("Lcl Scaling", out var sn) ? sn.Evaluate(ticks) : baseTransform.Scale;
-                    key.Value = additive
-                        ? new Transform(translation, Quaternion.Normalize(rotation), scale)
-                        : new Transform(
-                            translation - baseTransform.Translation,
-                            Quaternion.Normalize(Quaternion.Multiply(Quaternion.Inverse(baseTransform.Rotation), rotation)),
-                            Divide(scale, baseTransform.Scale));
+                    key.Value = KeyValue(nodes, baseTransform, additive, Ticks(stackKeys[k].Time));
                 }
 
                 // The last key replays key 0 (animation-stacks.md "Key marks").
@@ -995,16 +1007,99 @@ public static class FbxImporter
                     lastKey.Value = firstKey.Value;
 
                 // The layer's per-key flags say the tangent type (0x0102 step, 0x0104 linear, else
-                // spline); the app stores that as one mode per channel (curveboard.md).
+                // spline); the app stores that as one mode per channel (curveboard.md). Fitted keys
+                // are always spline keys: the fit chose them for spline playback.
                 for (int k = 0; k < keys.Count; k++)
                 {
-                    int source = k == keys.Count - 1 || k >= stackKeys.Count ? 0 : KeyIndex(nodes, stackKeys[k].Time);
+                    int source = fitted || k == keys.Count - 1 || k >= stackKeys.Count ? 0 : KeyIndex(nodes, stackKeys[k].Time);
                     int channels = k < track.TangentModes.Count ? track.TangentModes[k].Length : 0;
                     for (int channel = 0; channel < channels; channel++)
-                        track.SetTangentMode(k, channel, TangentModeOf(nodes, channel, source));
+                        track.SetTangentMode(k, channel, fitted ? SplineMode : TangentModeOf(nodes, channel, source));
                 }
                 TangentRecompute.Recompute(track);
             }
+        }
+
+        /// <summary>
+        /// The stack key value at <paramref name="ticks"/>: an additive layer's own delta as it is, an
+        /// override layer's absolute local transform as an offset from the rest transform.
+        /// </summary>
+        private static Transform KeyValue(Dictionary<string, FbxCurveNode> nodes, Transform baseTransform, bool additive, long ticks)
+        {
+            var translation = nodes.TryGetValue("Lcl Translation", out var tn) ? tn.Evaluate(ticks) : baseTransform.Translation;
+            var rotation = nodes.TryGetValue("Lcl Rotation", out var rn) ? RotationFromEuler(rn.Evaluate(ticks)) : baseTransform.Rotation;
+            var scale = nodes.TryGetValue("Lcl Scaling", out var sn) ? sn.Evaluate(ticks) : baseTransform.Scale;
+            return additive
+                ? new Transform(translation, Quaternion.Normalize(rotation), scale)
+                : new Transform(
+                    translation - baseTransform.Translation,
+                    Quaternion.Normalize(Quaternion.Multiply(Quaternion.Inverse(baseTransform.Rotation), rotation)),
+                    Divide(scale, baseTransform.Scale));
+        }
+
+        /// <summary>
+        /// True when a layer's keys are re-fitted: it has no stepped key, and its keys sit on (nearly)
+        /// every frame, as in a bake, or its curves are spline curves keyed at different times, as an
+        /// engine's or another tool's curve reduction writes them. A layer whose curves all share a few
+        /// key times holds authored poses and keeps them.
+        /// </summary>
+        private static bool Fittable(List<FbxCurveNode> curveNodes, SortedSet<int> times)
+        {
+            var curves = curveNodes.SelectMany(cn => cn.Curves).Where(c => c != null).Select(c => c!).ToList();
+            if (curves.Any(c => c.KeyFlags.Any(f => (f & 0xE) == 2))) return false;
+            if (times.Count * 10 >= (times.Max - times.Min + 1) * 9) return true;
+            bool shared = curves.All(c => c.Times.AsSpan().SequenceEqual(curves[0].Times));
+            return !shared && curves.All(c => c.KeyFlags.All(f => (f & 0xE) != 4));
+        }
+
+        // Fit tolerances: a tenth of a degree for rotation, a ten-thousandth of the rig's rest size
+        // for translation and 1e-3 of a scale factor - below what shows on screen, loose enough that
+        // a per-frame bake comes back with a fraction of its keys.
+        private const float FitRotationTolerance = 0.1f * MathF.PI / 180f;
+        private const float FitTranslationFraction = 1e-4f;
+        private const float FitScaleTolerance = 1e-3f;
+
+        /// <summary>
+        /// The stack key frames of an override layer: the file's curves sampled at every frame from its
+        /// first key to its last, keyed where the app's spline playback needs a key to stay within the
+        /// fit tolerances.
+        /// </summary>
+        private List<int> FitTimes(List<FbxCurveNode> curveNodes, Dictionary<long, AktObject> targets,
+                                   CharacterBuild build, SortedSet<int> fileTimes)
+        {
+            int first = fileTimes.Min, count = fileTimes.Max - first + 1;
+            var tracks = new List<Transform[]>();
+            foreach (var group in curveNodes.GroupBy(cn => cn.Model!.Id))
+            {
+                if (!targets.TryGetValue(group.Key, out var targetObj)) continue;
+                if (_model!.Wrap(targetObj) is not Object3D target) continue;
+                var nodes = group.Where(cn => cn.Property != null).GroupBy(cn => cn.Property!).ToDictionary(g => g.Key, g => g.First());
+                var baseTransform = build.JointIndex.TryGetValue(group.Key, out int index)
+                    ? build.RefTransforms[index]
+                    : Transform.FromMatrixLoose(target.LocalMatrix);
+                var samples = new Transform[count];
+                for (int f = 0; f < count; f++) samples[f] = KeyValue(nodes, baseTransform, false, Ticks(first + f));
+                tracks.Add(samples);
+            }
+
+            return StackKeyFit.Fit(first, tracks,
+                FitTranslationFraction * RestSize(build.Root), FitRotationTolerance, FitScaleTolerance);
+        }
+
+        /// <summary>The diagonal of the box around the rest positions of the character's models, at least 1.</summary>
+        private static float RestSize(FbxModel root)
+        {
+            var min = new Vector3(float.MaxValue);
+            var max = new Vector3(float.MinValue);
+            void Walk(FbxModel model, Matrix4x4 parentWorld)
+            {
+                var world = model.LocalMatrix * parentWorld;
+                min = Vector3.Min(min, world.Translation);
+                max = Vector3.Max(max, world.Translation);
+                foreach (var child in model.Children) Walk(child, world);
+            }
+            Walk(root, Matrix4x4.Identity);
+            return MathF.Max((max - min).Length(), 1);
         }
 
         /// <summary>Index of the curve key at <paramref name="time"/>, or 0 when the channel has none there.</summary>
@@ -1024,6 +1119,9 @@ public static class FbxImporter
             }
             return 0;
         }
+
+        /// <summary>The spline (auto) tangent mode, the same for both sides.</summary>
+        private static readonly TangentMode SplineMode = new(0x100u);
 
         private static TangentMode TangentModeOf(Dictionary<string, FbxCurveNode> nodes, int channel, int key)
         {

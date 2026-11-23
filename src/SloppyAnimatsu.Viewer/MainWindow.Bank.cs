@@ -701,7 +701,32 @@ public sealed partial class MainWindow
                 ToggleBankFolder(folder);
             };
         }
-        return row;
+        // Lit while an open Export Settings window would write this animation (or, for a folder,
+        // something inside it); behind the row and never hit-tested.
+        Border exportMark = ExportHighlight.NewMark();
+        exportMark.Margin = new Thickness(-4.0, 0.0, -4.0, 0.0);
+        SceneObject bankItem = item.Value;
+        // Only rows on screen are tracked, so a list that rebuilds or recycles its rows leaves none behind.
+        exportMark.AttachedToVisualTree += (_, _) =>
+        {
+            _bankExportMarks.Add((exportMark, bankItem));
+            ExportHighlight.Apply(exportMark, _bankExportFilter?.Invoke(bankItem) == true);
+        };
+        exportMark.DetachedFromVisualTree += (_, _) => _bankExportMarks.Remove((exportMark, bankItem));
+        return new Grid { Children = { exportMark, row } };
+    }
+
+    /// <summary>The Anim Bank rows' export marks, with the bank item each one stands for.</summary>
+    private readonly HashSet<(Border Mark, SceneObject Item)> _bankExportMarks = [];
+
+    private Func<SceneObject, bool>? _bankExportFilter;
+
+    /// <summary>Lights the Anim Bank rows <paramref name="filter"/> takes (null clears every mark).</summary>
+    private void SetBankExportFilter(Func<SceneObject, bool>? filter)
+    {
+        _bankExportFilter = filter;
+        foreach (var (mark, item) in _bankExportMarks)
+            ExportHighlight.Apply(mark, filter?.Invoke(item) == true);
     }
 
     private static string AnimationPath(Animation a)

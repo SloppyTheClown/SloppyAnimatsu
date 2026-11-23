@@ -256,8 +256,7 @@ public sealed class FbxCurveNode
 }
 
 /// <summary>
-/// One animation curve. <see cref="Evaluate"/> handles constant and linear keys exactly and
-/// treats cubic keys as linear: enough to sample baked curves at their key times.
+/// One animation curve with its keys, flags and tangent data; <see cref="Evaluate"/> samples it.
 /// </summary>
 public sealed class FbxCurve
 {
@@ -294,6 +293,20 @@ public sealed class FbxCurve
         return result.ToArray();
     }
 
+    private float[][]? _keyData;
+
+    // FBX key flags (low bits: interpolation; then the tangent mode of a cubic key).
+    private const int InterpolationMask = 0x0E, Constant = 0x02, Linear = 0x04, Cubic = 0x08;
+    private const int TangentUser = 0x400, TangentBreak = 0x800;
+
+    /// <summary>
+    /// The curve's value at <paramref name="ticks"/>: constant keys hold, linear keys interpolate
+    /// straight, cubic keys are Hermite segments with each key's right slope and the next key's left
+    /// slope (per second). User and broken tangents take the slopes the file stores; auto tangents
+    /// take them too when the file stores any, else the slope through the two neighbouring keys
+    /// (flat on the first and last key). Tangent weights are ignored (every segment is unweighted).
+    /// Before the first key and after the last the curve holds the end value.
+    /// </summary>
     public float Evaluate(long ticks)
     {
         var times = Times;
@@ -307,9 +320,59 @@ public sealed class FbxCurve
         // Keys a fraction of a tick away from a frame time are still that key.
         if (ticks - times[next - 1] < 1000) return values[next - 1];
         if (times[next] - ticks < 1000) return values[next];
-        const int constant = 0x2;
-        if ((KeyFlags.ElementAtOrDefault(next - 1) & 0xE) == constant) return values[next - 1];
-        double u = (ticks - times[next - 1]) / (double)(times[next] - times[next - 1]);
-        return (float)(values[next - 1] + u * (values[next] - values[next - 1]));
+        int prev = next - 1;
+        int flags = KeyFlags.ElementAtOrDefault(prev);
+        int interpolation = flags & InterpolationMask;
+        if (interpolation == Constant) return values[prev];
+        double span = times[next] - times[prev];
+        double u = (ticks - times[prev]) / span;
+        if (interpolation != Cubic)
+            return (float)(values[prev] + u * (values[next] - values[prev]));
+
+        double seconds = span / FbxWriter.TicksPerSecond;
+        double tangentOut = RightSlope(prev) * seconds;
+        double tangentIn = LeftSlope(next) * seconds;
+        double u2 = u * u, u3 = u2 * u;
+        return (float)((2 * u3 - 3 * u2 + 1) * values[prev] + (u3 - 2 * u2 + u) * tangentOut +
+                       (-2 * u3 + 3 * u2) * values[next] + (u3 - u2) * tangentIn);
+    }
+
+    /// <summary>The slope (per second) leaving key <paramref name="k"/>.</summary>
+    private double RightSlope(int k)
+    {
+        var data = _keyData ??= KeyData;
+        if (UsesStoredSlopes(k) && k < data.Length) return data[k][0];
+        return AutoSlope(k);
+    }
+
+    /// <summary>The slope (per second) arriving at key <paramref name="k"/>, stored on the key before it.</summary>
+    private double LeftSlope(int k)
+    {
+        var data = _keyData ??= KeyData;
+        if (UsesStoredSlopes(k) && k >= 1 && k - 1 < data.Length) return data[k - 1][1];
+        return AutoSlope(k);
+    }
+
+    /// <summary>User and broken tangents always use the stored slopes; auto ones only when the
+    /// file stored a slope for that key (writers that leave auto slopes zeroed expect the reader to
+    /// compute them).</summary>
+    private bool UsesStoredSlopes(int k)
+    {
+        int flags = KeyFlags.ElementAtOrDefault(k);
+        if ((flags & (TangentUser | TangentBreak)) != 0) return true;
+        var data = _keyData ??= KeyData;
+        bool right = k < data.Length && data[k][0] != 0;
+        bool left = k >= 1 && k - 1 < data.Length && data[k - 1][1] != 0;
+        return right || left;
+    }
+
+    /// <summary>Slope through the neighbouring keys (per second); flat on the first and last key.</summary>
+    private double AutoSlope(int k)
+    {
+        var times = Times;
+        var values = Values;
+        if (k <= 0 || k >= times.Length - 1) return 0;
+        double seconds = (times[k + 1] - times[k - 1]) / (double)FbxWriter.TicksPerSecond;
+        return seconds > 0 ? (values[k + 1] - values[k - 1]) / seconds : 0;
     }
 }

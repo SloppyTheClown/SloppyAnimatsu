@@ -115,19 +115,18 @@ public enum MenuCommand
     SetView,
     AddAnimatedCamera,
 
-    // Export, Import, Help
-    ExportFbxUnbaked,
-    ExportFbxBaked,
-    ExportFbxForEngine,
-    ExportAknm,
-    ImportFbx,
-    ImportAkt,
-    ImportAknm,
+    // File > Import / Export, Help
+    /// <summary>File > Import…: one picker for every file type the app imports (FBX, scenes, .aknm).</summary>
+    Import,
+    /// <summary>File > Export…: the Export Settings window.</summary>
+    Export,
     About,
     /// <summary>Help > Show Welcome screen: the startup Welcome window, on demand.</summary>
     ShowWelcome,
     /// <summary>Help > Show log: this run's log and the previous run's, in a window.</summary>
     ShowLog,
+    /// <summary>Help > Check for updates: looks up the newest GitHub release and offers to install it.</summary>
+    CheckForUpdates,
     /// <summary>The timeline's empty-spot menu: a key at the clicked frame.</summary>
     TimelineCreateKey,
     /// <summary>The timeline's empty-spot menu: the clipboard pasted at the clicked frame.</summary>
@@ -285,6 +284,12 @@ public sealed record MenuState
 
     /// <summary>Keys are selected in the active stack.</summary>
     public bool HasKeySelection => HasStack && SelectedKeyCount > 0;
+
+    /// <summary>A selected key already has a fade-in: the timeline key menu offers to remove it.</summary>
+    public bool SelectedKeysHaveFadeIn { get; init; }
+
+    /// <summary>A selected key already has a fade-out: the timeline key menu offers to remove it.</summary>
+    public bool SelectedKeysHaveFadeOut { get; init; }
 }
 
 /// <summary>
@@ -308,24 +313,43 @@ public static class MenuModel
     /// <summary>The Recent scenes submenu's row when the list is empty.</summary>
     public const string NoRecentScenes = "(no recent scenes)";
 
-    /// <summary>The menu bar: File, Edit, Rig, Keys, Animation, Stack, Context, View, Export, Import, Help.</summary>
-    public static IReadOnlyList<MenuEntry> Build(MenuState state) =>
+    /// <summary>The Plugins menu's row while no plugin is installed.</summary>
+    public const string NoPlugins = "(no plugins installed)";
+
+    /// <summary>The menu bar the window shows: File, Edit, Plugins, Help.</summary>
+    public static IReadOnlyList<MenuEntry> Bar(MenuState state) =>
     [
         Submenu("_File", FileItems(state)),
         Submenu("_Edit", EditItems(state)),
+        Submenu("_Plugins", Label(NoPlugins)),
+        Submenu("_Help", HelpItems()),
+    ];
+
+    /// <summary>
+    /// The command groups that are not on the menu bar but whose rows still carry keys (the
+    /// window's key router runs them): Rig, Keys, Animation, Stack, Context and View. Their commands
+    /// are reached by those keys, the panels' buttons and the context menus.
+    /// </summary>
+    public static IReadOnlyList<MenuEntry> KeyedGroups(MenuState state) =>
+    [
         Submenu("_Rig", RigItems(state)),
         Submenu("_Keys", KeyItems(state).ToArray()),
         Submenu("_Animation", AnimationItems(state).ToArray()),
         Submenu("_Stack", StackItems(state).ToArray()),
-        Submenu("_Context",
-            CheckItem("_Rigging", MenuCommand.SetContext, ContextArgument(InterfaceContext.Rigging),
-                state.Context == InterfaceContext.Rigging),
-            CheckItem("_Animation", MenuCommand.SetContext, ContextArgument(InterfaceContext.Animation),
-                state.Context == InterfaceContext.Animation)),
+        Submenu("_Context", ContextItems(state)),
         Submenu("_View", ViewItems(state)),
-        Submenu("_Export", ExportItems()),
-        Submenu("_Import", ImportItems()),
-        Submenu("_Help", HelpItems()),
+    ];
+
+    /// <summary>Every command row a key can run: the menu bar, then <see cref="KeyedGroups"/>.</summary>
+    public static IReadOnlyList<MenuEntry> Build(MenuState state) => [.. Bar(state), .. KeyedGroups(state)];
+
+    /// <summary>The two interface contexts, the current one checked.</summary>
+    public static MenuEntry[] ContextItems(MenuState state) =>
+    [
+        CheckItem("_Rigging", MenuCommand.SetContext, ContextArgument(InterfaceContext.Rigging),
+            state.Context == InterfaceContext.Rigging),
+        CheckItem("_Animation", MenuCommand.SetContext, ContextArgument(InterfaceContext.Animation),
+            state.Context == InterfaceContext.Animation),
     ];
 
     /// <summary>The key mark, order, fade and gap commands, as the Keys menu and the timeline's context menu.</summary>
@@ -374,7 +398,8 @@ public static class MenuModel
             enabled: state.HasStack && state.HasClipboard),
     ];
 
-    /// <summary>The timeline's context menu on a key: the selected keys (the clicked one joins them).</summary>
+    /// <summary>The timeline's context menu on a key: the selected keys (the clicked one joins them).
+    /// A fade row becomes its Remove row when a selected key already has that fade.</summary>
     public static IReadOnlyList<MenuEntry> TimelineKeyItems(MenuState state)
     {
         bool selected = state.HasKeySelection;
@@ -383,8 +408,12 @@ public static class MenuModel
             Item("Remove Key(s)", MenuCommand.DeleteKeys, gesture: Key(0x2E), enabled: selected),
             Item("Copy Key(s)", MenuCommand.CopyKeys, gesture: Ctrl(0x43), enabled: selected),
             MenuEntry.Separator,
-            Item("Create Fade-in", MenuCommand.FadeIn, enabled: selected),
-            Item("Create Fade-out", MenuCommand.FadeOut, enabled: selected),
+            state.SelectedKeysHaveFadeIn
+                ? Item("Remove Fade-in", MenuCommand.RemoveFadeIn, enabled: selected)
+                : Item("Create Fade-in", MenuCommand.FadeIn, enabled: selected),
+            state.SelectedKeysHaveFadeOut
+                ? Item("Remove Fade-out", MenuCommand.RemoveFadeOut, enabled: selected)
+                : Item("Create Fade-out", MenuCommand.FadeOut, enabled: selected),
         ];
     }
 
@@ -559,6 +588,10 @@ public static class MenuModel
             gesture: Gesture(state, "SaveFileAs",
                 new ShortcutKey(0x53, ShortcutModifiers.Control | ShortcutModifiers.Shift))),
         MenuEntry.Separator,
+        Item("_Import…", MenuCommand.Import),
+        Item("_Export…", MenuCommand.Export, gesture: Gesture(state, "ExportMenu", Ctrl(0x45)),
+            enabled: state.HasScene),
+        MenuEntry.Separator,
         RecentMenu(state),
         MenuEntry.Separator,
         Item("_Preferences…", MenuCommand.Preferences),
@@ -656,7 +689,7 @@ public static class MenuModel
             }
     }
 
-    private static MenuEntry[] ViewItems(MenuState state)
+    public static MenuEntry[] ViewItems(MenuState state)
     {
         var layout = new List<MenuEntry>();
         foreach (SceneLayout value in Enum.GetValues<SceneLayout>())
@@ -688,29 +721,12 @@ public static class MenuModel
         return items.ToArray();
     }
 
-    private static MenuEntry[] ExportItems() =>
-    [
-        Item("Export FBX (unbaked)…", MenuCommand.ExportFbxUnbaked),
-        Item("Export FBX (_baked)…", MenuCommand.ExportFbxBaked),
-        Item("Export FBX for _Unity…", MenuCommand.ExportFbxForEngine, "Unity"),
-        Item("Export FBX for _Godot…", MenuCommand.ExportFbxForEngine, "Godot"),
-        Item("Export FBX for B_lender…", MenuCommand.ExportFbxForEngine, "Blender"),
-        MenuEntry.Separator,
-        Item("Export _AKNM…", MenuCommand.ExportAknm),
-    ];
-
-    private static MenuEntry[] ImportItems() =>
-    [
-        Item("Import _FBX…", MenuCommand.ImportFbx),
-        Item("Import another _scene…", MenuCommand.ImportAkt),
-        Item("Import .aknm _animations…", MenuCommand.ImportAknm),
-    ];
-
     private static MenuEntry[] HelpItems() =>
     [
         Item("_About Sloppy Animatsu…", MenuCommand.About),
         Item("Show _Welcome screen…", MenuCommand.ShowWelcome),
         Item("Show _log…", MenuCommand.ShowLog),
+        Item("Check for _updates…", MenuCommand.CheckForUpdates),
         MenuEntry.Separator,
         Item("Keyboard _shortcuts…", MenuCommand.KeyboardShortcuts),
         Item("_Panel keys…", MenuCommand.PanelKeys),

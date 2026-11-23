@@ -1,6 +1,6 @@
-﻿// File commands and documents: export FBX/AKNM, import FBX/AKT/AKNM, About, New/Open/Load, the
-// Welcome window, the document tab strip, and closing (with the per-document unsaved-changes
-// prompt).
+﻿// File commands and documents: File > Import… (FBX, scenes, .aknm; export is MainWindow.Export.cs),
+// About, New/Open/Load, the Welcome window, the document tab strip, and closing (with the
+// per-document unsaved-changes prompt).
 //
 // SloppyAnimatsu.Core does the serialization and the dialogs only name a path; this file keeps the
 // DocumentSet and the tab strip in step with the current DocumentState.
@@ -34,124 +34,40 @@ namespace SloppyAnimatsu.Viewer;
 
 public sealed partial class MainWindow
 {
-    private async Task ExportFbx(bool baked, FbxExportPreset preset = FbxExportPreset.Plain)
+    /// <summary>
+    /// File > Import…: one picker for every importable type, and the extension picks the importer:
+    /// an FBX opens as a new scene, a scene (.slopa/.akt) is merged into the current one, and an
+    /// .aknm brings its animations onto the selected character.
+    /// </summary>
+    private async Task ImportAny()
     {
-        if (_pose == null)
+        string[] fbx = ["*.fbx"], aknm = ["*.aknm"];
+        IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            _status.Text = "No scene to export.";
-            return;
-        }
-        string path = (await base.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-        {
-            Title = preset != FbxExportPreset.Plain ? $"Export FBX for {preset}" : (baked ? "Export FBX (baked)" : "Export FBX (unbaked)"),
-            SuggestedFileName = Path.GetFileNameWithoutExtension(_path ?? _documentName) + ".fbx",
-            DefaultExtension = "fbx",
-            FileTypeChoices = [new FilePickerFileType("FBX")
-            {
-                Patterns = ["*.fbx"]
-            }]
-        }))?.TryGetLocalPath();
-        if (path == null)
-        {
-            return;
-        }
-        try
-        {
-            var model = _pose.Model;
-            var options = new FbxExportOptions
-            {
-                Preset = preset,
-                Baked = baked,
-                DocumentPath = _path,
-                TextureDirectory = Path.GetDirectoryName(path)
-            };
-            _play.IsChecked = false;
-            await ProgressDialog.Run(this, "Exporting FBX", "Exporting " + Path.GetFileName(path) + "...",
-                progress => FbxExporter.Export(model, path, options, progress));
-            _status.Text = $"Exported {(preset != FbxExportPreset.Plain ? preset.ToString() : baked ? "baked" : "unbaked")} FBX to {path} ({Bytes(path)}).";
-        }
-        catch (Exception ex)
-        {
-            _status.Text = "FBX export failed: " + ex.Message;
-        }
-    }
-
-    private async Task ExportAknm()
-    {
-        if (_pose == null || _character == null)
-        {
-            _status.Text = "Select a character to export.";
-            return;
-        }
-        List<Animation> animations = _character.Animations.ToList();
-        if (animations.Count == 0)
-        {
-            _status.Text = "'" + _character.Name + "' has no animation to export.";
-            return;
-        }
-        string path = (await base.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-        {
-            Title = "Export animation (.aknm)",
-            SuggestedFileName = _character.Name + ".aknm",
-            DefaultExtension = "aknm",
-            FileTypeChoices = [new FilePickerFileType("akeytsu animation")
-            {
-                Patterns = ["*.aknm"]
-            }]
-        }))?.TryGetLocalPath();
-        if (path == null)
-        {
-            return;
-        }
-        try
-        {
-            var model = _pose.Model;
-            var character = _character;
-            _play.IsChecked = false;
-            await ProgressDialog.Run(this, "Exporting animation", "Exporting " + Path.GetFileName(path) + "...",
-                progress => AknmExport.Write(model, character, animations, path, progress));
-            _status.Text = $"Exported {animations.Count} animation(s) of '{_character.Name}' to {path} ({Bytes(path)}).";
-        }
-        catch (Exception ex)
-        {
-            _status.Text = "AKNM export failed: " + ex.Message;
-        }
-    }
-
-    private async Task ImportFbx()
-    {
-        IReadOnlyList<IStorageFile> files = await base.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "Import FBX",
+            Title = "Import",
             FileTypeFilter = [
-                new FilePickerFileType("FBX")
-                {
-                    Patterns = ["*.fbx"]
-                },
-                FilePickerFileTypes.All
+                new FilePickerFileType("All importable files") { Patterns = [.. fbx, .. SceneFiles.Patterns, .. aknm] },
+                new FilePickerFileType("FBX (opens as a new scene)") { Patterns = fbx },
+                new FilePickerFileType("Scene (.slopa, .akt), merged into this scene") { Patterns = SceneFiles.Patterns },
+                new FilePickerFileType("Animation (.aknm), onto the selected character") { Patterns = aknm },
             ]
         });
-        string path = default(string);
-        int num;
-        if (files.Count != 0)
-        {
-            path = files[0].TryGetLocalPath();
-            num = ((path == null) ? 1 : 0);
-        }
-        else
-        {
-            num = 1;
-        }
-        if (num != 0)
-        {
-            return;
-        }
+        string? path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        if (path == null) return;
+        if (path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) ImportFbx(path);
+        else if (path.EndsWith(".aknm", StringComparison.OrdinalIgnoreCase)) ImportAknm(path);
+        else if (SceneFiles.HasSceneExtension(path)) ImportScene(path);
+        else _status.Text = "Cannot import " + Path.GetFileName(path) + ": choose an .fbx, .slopa, .akt or .aknm file.";
+    }
+
+    private void ImportFbx(string path)
+    {
         int warnings = 0;
         try
         {
             SceneModel model = FbxImporter.Import(path, new FbxImportOptions
             {
-                Warning = delegate(string message)
+                Warning = message =>
                 {
                     warnings++;
                     Console.WriteLine(message);
@@ -160,7 +76,7 @@ public sealed partial class MainWindow
             ShowDocument(_documents.Add(model, Path.GetFileNameWithoutExtension(path) + " (imported)"));
             _dirty = true;
             UpdateTitle();
-            _status.Text = $"Imported {Path.GetFileName(path)} as a new scene with {warnings} warning(s); " + "File > Save As keeps it as .akt.";
+            _status.Text = $"Imported {Path.GetFileName(path)} as a new scene with {warnings} warning(s); File > Save As keeps it.";
         }
         catch (Exception ex)
         {
@@ -168,90 +84,40 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task ImportAkt()
+    private void ImportScene(string path)
     {
         if (_pose == null)
         {
-            _status.Text = "Open a scene before importing another one.";
-            return;
-        }
-        IReadOnlyList<IStorageFile> files = await base.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "Import another scene",
-            FileTypeFilter = [new FilePickerFileType("Scene (.slopa, .akt)")
-            {
-                Patterns = SceneFiles.Patterns
-            }]
-        });
-        string path = default(string);
-        int num;
-        if (files.Count != 0)
-        {
-            path = files[0].TryGetLocalPath();
-            num = ((path == null) ? 1 : 0);
-        }
-        else
-        {
-            num = 1;
-        }
-        if (num != 0)
-        {
+            _status.Text = "Open a scene before importing another one into it.";
             return;
         }
         int warnings = 0;
         try
         {
-            SceneModel model = _pose.Model;
-            AktImportResult result = AktImport.Import(model, path, new AktImportOptions
+            AktImportResult result = AktImport.Import(_pose.Model, path, new AktImportOptions
             {
-                Warning = delegate(string message)
+                Warning = message =>
                 {
                     warnings++;
                     Console.WriteLine(message);
                 }
             });
-            if (_document != null)
-            {
-                ShowDocument(_document.Document);
-            }
+            if (_document != null) ShowDocument(_document.Document);
             _dirty = true;
             UpdateTitle();
             _status.Text = $"Imported {result.Characters.Count} character(s), {result.Materials.Count} material(s) and {result.Textures.Count} texture(s) from {Path.GetFileName(path)} ({warnings} warning(s)).";
         }
         catch (Exception ex)
         {
-            _status.Text = "AKT import failed: " + ex.Message;
+            _status.Text = "Scene import failed: " + ex.Message;
         }
     }
 
-    private async Task ImportAknm()
+    private void ImportAknm(string path)
     {
         if (_pose == null || _character == null)
         {
             _status.Text = "Select a character to import animations onto.";
-            return;
-        }
-        IReadOnlyList<IStorageFile> files = await base.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "Import .aknm animations",
-            FileTypeFilter = [new FilePickerFileType("akeytsu animation")
-            {
-                Patterns = ["*.aknm"]
-            }]
-        });
-        string path = default(string);
-        int num;
-        if (files.Count != 0)
-        {
-            path = files[0].TryGetLocalPath();
-            num = ((path == null) ? 1 : 0);
-        }
-        else
-        {
-            num = 1;
-        }
-        if (num != 0)
-        {
             return;
         }
         int warnings = 0;
@@ -260,7 +126,7 @@ public sealed partial class MainWindow
             AknmImportResult result = AknmImport.Import(file: AknmFile.Read(path), model: _pose.Model, options: new AknmImportOptions
             {
                 Character = _character,
-                Warning = delegate(string message)
+                Warning = message =>
                 {
                     warnings++;
                     Console.WriteLine(message);

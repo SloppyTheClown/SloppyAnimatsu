@@ -87,10 +87,10 @@ internal static partial class Program
                                                 blendshape targets, controllers, channels and the mixed
                                                 values and influences at the frame
           fbxexport <file.slopa> <out.fbx> [--preset=plain|unity|godot|blender] [--baked|--unbaked]
-                    [--plain|--no-plain] [--linear|--step] [--min-scale=x]
+                    [--fitted|--stack-keys] [--fit-cubic|--fit-linear] [--plain|--no-plain] [--linear|--step] [--min-scale=x]
                     [--animation=name]... [--character=name]... [--textures=dir]
                                                 write the scene as FBX
-          fbximport <file.fbx> <out.slopa> [--no-animations] [--no-skins] [--no-materials] [--textures=dir]
+          fbximport <file.fbx> <out.slopa> [--no-animations] [--no-skins] [--no-materials] [--keep-keys] [--textures=dir]
                                                 read an FBX scene into a new scene
           fbxcheck  <ours.fbx> <reference.fbx>  models, geometry, skins, bind poses and curves of two FBX files
           fbxrewrite <in.fbx> <out.fbx>         read a binary FBX and write it back through FbxWriter
@@ -1996,6 +1996,8 @@ internal static partial class Program
         bool baked = Flag("--baked", "--unbaked") ?? defaults.Baked;
         bool plain = Flag("--plain", "--no-plain") ?? defaults.PlainHierarchy;
         bool linear = Flag("--linear", "--step") ?? defaults.LinearBakedKeys;
+        bool fitted = Flag("--fitted", "--stack-keys") ?? defaults.FittedKeys;
+        bool fittedCubic = Flag("--fit-cubic", "--fit-linear") ?? defaults.FittedCubic;
         string? minScaleText = options.FirstOrDefault(o => o.StartsWith("--min-scale=", StringComparison.Ordinal))?["--min-scale=".Length..];
         float minScale = minScaleText != null
             ? float.Parse(minScaleText, System.Globalization.CultureInfo.InvariantCulture)
@@ -2008,23 +2010,28 @@ internal static partial class Program
             .Where(a => animationNames.Count == 0 || animationNames.Contains(a.Name ?? ""))
             .ToList();
 
-        var watch = Stopwatch.StartNew();
-        SloppyAnimatsu.Core.Fbx.FbxExporter.Export(model, outPath, new SloppyAnimatsu.Core.Fbx.FbxExportOptions
+        var exportOptions = new SloppyAnimatsu.Core.Fbx.FbxExportOptions
         {
             Preset = preset,
             Baked = baked,
             PlainHierarchy = plain,
             LinearBakedKeys = linear,
+            FittedKeys = fitted,
+            FittedCubic = fittedCubic,
             MinimumScale = minScale,
             Characters = characters,
             Animations = animations,
             TextureDirectory = textures,
             DocumentPath = outPath,
             Timestamp = DateTime.Now,
-        });
+        };
+        foreach (var warning in exportOptions.CompatibilityWarnings())
+            Console.Error.WriteLine("warning: " + warning);
+        var watch = Stopwatch.StartNew();
+        SloppyAnimatsu.Core.Fbx.FbxExporter.Export(model, outPath, exportOptions);
         watch.Stop();
         Console.WriteLine($"{outPath}: {new FileInfo(outPath).Length:N0} bytes, {characters.Count} characters, " +
-                          $"{animations.Count} animations ({(baked ? "baked" : "unbaked")}{(baked && plain ? ", plain hierarchy" : "")}{(baked && linear ? ", linear keys" : "")}, preset {preset}), {watch.ElapsedMilliseconds} ms");
+                          $"{animations.Count} animations ({(baked ? "baked" : fitted ? (fittedCubic ? "fitted cubic keys" : "fitted linear keys") : "stack keys")}{((baked || fitted) && plain ? ", plain hierarchy" : "")}{(baked && linear ? ", linear keys" : "")}, preset {preset}), {watch.ElapsedMilliseconds} ms");
         return 0;
     }
 
@@ -2115,7 +2122,7 @@ internal static partial class Program
     private static int FbxImport(string[] args)
     {
         if (args.Length < 2)
-            return Fail("fbximport <file.fbx> <out.slopa> [--no-animations] [--no-skins] [--no-materials] [--textures=dir]");
+            return Fail("fbximport <file.fbx> <out.slopa> [--no-animations] [--no-skins] [--no-materials] [--keep-keys] [--textures=dir]");
         var options = args[2..].Where(a => a.StartsWith("--", StringComparison.Ordinal)).ToList();
         string? textures = options.FirstOrDefault(o => o.StartsWith("--textures=", StringComparison.Ordinal))?["--textures=".Length..];
         var warnings = new List<string>();
@@ -2124,6 +2131,7 @@ internal static partial class Program
         {
             Animations = !options.Contains("--no-animations"),
             Skins = !options.Contains("--no-skins"),
+            FitKeys = !options.Contains("--keep-keys"),
             Materials = !options.Contains("--no-materials"),
             TextureDirectory = textures,
             Warning = warnings.Add,

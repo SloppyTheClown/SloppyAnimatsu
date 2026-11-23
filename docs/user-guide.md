@@ -22,18 +22,18 @@ an up-right drag is fastest) and a middle drag pans, at once and with no slop. A
 a gizmo handle edits instead, and with the Skin Workshop's Paint armed a left drag over the mesh
 paints.
 
-The eight fixed scene cameras (Perspective, Front, Back, Right, Left, Top, Bottom) and Photo are on
-the **View** menu; the orthographic views use the camera's own axis and framed height, and Photo is
-letterboxed to the camera's ratio. A fixed camera cannot be orbited. A scene's animated cameras
-appear in the same menu once they exist and follow the animation and its FOV at the current frame.
+The fixed scene cameras (Perspective, Front, Back, Right, Left, Top, Bottom) and Photo are chosen
+per view; the orthographic views use the camera's own axis and framed height, and Photo is
+letterboxed to the camera's ratio. A fixed camera cannot be orbited. A scene's animated cameras each
+get their own window, which follows the animation and its FOV at the current frame.
 
-**View > Layout:** switches between the single view, two views, two views with the Curveboard and
-four views (F1-F4; **L** toggles between a multi-view layout and the single view). Each layout
+**Layouts:** F1-F4 switch between the single view, two views, two views with the Curveboard and
+four views (**L** toggles between a multi-view layout and the single view). Each layout
 remembers its own cameras in the scene, so the choice is saved with it. Clicking a view focuses it
-(an orange outline) and the Camera part of the View menu then applies to that view.
+(an orange outline) and the camera keys then apply to that view.
 
 Objects hidden in the Scene panel are not drawn and cannot be picked; an object marked unpickable
-in the file is refused as well. The **Context** menu switches between the Rigging and Animation
+in the file is refused as well. Tab (or the context button) switches between the Rigging and Animation
 contexts; the choice is stored in the scene, so it reopens in the same context. The
 **bottom-right of the status bar** shows the current context and has a **Switch to Animation** /
 **Switch to Rigging** button that does the same as Tab.
@@ -141,23 +141,24 @@ orange line.
 The hollow **end key** replays key 0: it stays last and cannot be dragged, reordered, deleted or
 marked.
 
-**Keys** (also the timeline's right-click menu) marks the selected keys as **extreme** (a red
-triangle above) or **breakdown** (a blue triangle below), removes marks, and adds a **5-frame fade**
-in or out (a green ramp with a square handle at its far end, dragged to lengthen or shorten the fade
-by whole frames, never below 1; Escape cancels).
+The timeline's right-click menu on a key removes or copies the selected keys and adds a **5-frame
+fade** in or out (a green ramp with a square handle at its far end, dragged to lengthen or shorten
+the fade by whole frames, never below 1; Escape cancels). When a selected key already has a fade-in
+(or fade-out), that row reads **Remove Fade-in** (or **Remove Fade-out**) instead.
 
 **Copy and paste:** Ctrl+C copies the selected keys of the selected controllers, Ctrl+V pastes them
 onto the selected keys, Ctrl+Shift+V inserts them after the last selected key. IK and reverse-foot
 keys carry their pole angle and their IK flag.
 
-**Keys > Change Space…** switches the selected controllers, at the frames of the selected keys, to
-one of the spaceable objects or back to the parent, in every stack that keys those frames; the pose
-at those frames stays where it is. **Keys > Toggle spaceable** makes the selected objects available
-as spaces, or no longer.
+**Space Switch** (the Transform window's space button) switches the selected controllers, at the
+frames of the selected keys, to one of the spaceable objects or back to the parent, in every stack
+that keys those frames; the pose at those frames stays where it is. Which objects are spaceable is
+also set in the Transform window.
 
-**Keys > Mirror keys** mirrors the selected keys of the selected controllers onto their symmetric
-counterparts, found by name (`_L`/`_R`, `Left`/`Right` and the other shipped patterns), keeping each
-key's mirrored world position and its space. **Edit > Mirror pose** does the same for the rest pose.
+**Mirror** (in the Transform window) mirrors the selected keys of the selected controllers onto
+their symmetric counterparts, found by name (`_L`/`_R`, `Left`/`Right` and the other shipped
+patterns), keeping each key's mirrored world position and its space; in the rest pose it mirrors the
+pose.
 
 ### The Curveboard
 
@@ -175,8 +176,8 @@ values, a middle drag pans them, and F or Fit fits them. Each edit is one undo s
 ## The Anim Bank and Mixer
 
 The animation list in the **Bank** panel shows the character's animations, its folders as `Name/`
-rows with their contents indented below, and the **(rest pose)** entry. The **Animation** menu (also
-the list's right-click menu) creates an animation (one stack with a track per controller), copies,
+rows with their contents indented below, and the **(rest pose)** entry. The list's right-click menu
+creates an animation (one stack with a track per controller), copies,
 deletes and renames the shown one, and manages folders: **New folder**, **Rename folder…** and
 **Delete folder** (with everything inside). Dragging an animation or folder in the list drops it
 into the folder under the pointer; a folder never goes into itself.
@@ -196,7 +197,7 @@ with the current object not keyed in the active stack it gives the selected cont
 there, and with it already keyed it removes their tracks (and their IK or reverse-foot groups) from
 the stack.
 
-**Animation > Cycle Step** appends a mirrored second step to the active stack (the keys without the
+The Cyclemaker panel's **Cycle Step** appends a mirrored second step to the active stack (the keys without the
 loop key are copied, mirrored onto the symmetric counterparts or onto the same object, and the time
 array grows by one step). **Cycle Side** mirrors the selected controllers between the two halves of
 the cycle, leaving times, marks and fades alone; it needs a cycle stack with an even number of keys
@@ -217,7 +218,7 @@ cannot be decoded (an MP3 or OGG stored verbatim by some other tool) is a grey, 
 
 ## Rigging
 
-Switch to the Rigging context with **Context > Rigging** or Tab. The Rig menu runs the skeleton
+Switch to the Rigging context with Tab. The RIG ATELIER panel and the rig keys run the skeleton
 commands on the rest pose, one undo step each:
 
 | Command | What it does |
@@ -257,7 +258,7 @@ which point is missing.
 
 ### Retarget animations
 
-**Animation > Retarget animations…** copies one character's animations onto another character of the
+**Retarget animations…** (the Anim Bank's right-click menu) copies one character's animations onto another character of the
 same scene. It opens the *Animation Retargeting* window: pick the **source skeleton** and the
 **target skeleton** (the scene's characters that have joints, IK or reverse-foot controllers) and
 the window lists the controllers it matched by name; the ones that found no counterpart on either
@@ -305,11 +306,11 @@ joints by name.
 
 ## Cameras
 
-View > a camera name looks through one of the scene's eight fixed cameras or an animated camera.
-**View > Add animated camera** creates a `CCameraAnimated` as a child of the selected character (one
-undo step) and looks through it; the other animated cameras appear in the same menu and follow the
-animation and its FOV at the current frame. A selected camera shows an FOV field in the side panel
-that keys its vertical field of view at the current frame.
+Each view looks through one of the scene's fixed cameras. **Add animated camera** in the rig
+workshop creates a `CCameraAnimated` as a child of the selected character (one undo step); every
+animated camera gets its own window, which follows the animation and its FOV at the current frame.
+A selected camera shows an FOV field in the side panel that keys its vertical field of view at the
+current frame.
 
 An animated camera also gets an editor orbit rig - a hidden joint under the camera, a
 `CCameraTarget` under the character and the looker track - and the target is drawn as a translucent
@@ -322,21 +323,51 @@ current.
 
 ## Import and export
 
-| Command | Effect |
-|-|-|
-| **Export > Export FBX (unbaked)…** | The whole scene - models, geometry, skins, bind poses, materials with embedded textures - and the animations from the stacks' own keys |
-| **Export > Export FBX (baked)…** | The same with one key per frame on every animation |
-| **Export > Export AKNM…** | The current character's rig and animations as an `.aknm` file |
-| **Import > Import FBX…** | Reads an FBX into a new document: characters, joints, meshes, skin weights, bind poses, materials with textures, one animation per FBX stack. **This replaces the open document** - save first |
-| **Import > Import another scene…** | Merges another scene's characters (with their animations), materials and textures into the open scene; its cameras and blendshape sights are left out |
-| **Import > Import .aknm animations…** | Copies an `.aknm`'s animations onto the current character, pairing controllers by name and checking the reference poses |
+**File > Import…** takes every importable file in one picker, and the file's type decides what
+happens:
 
-FBX export writes the textures into the FBX and, when the material points at a file, copies it beside
-the exported file. Imported FBX warnings (an unsupported layer, a missing joint) are printed to the
+| File | Effect |
+|-|-|
+| `.fbx` | Reads the FBX into a new document: characters, joints, meshes, skin weights, bind poses, materials with textures, one animation per FBX stack |
+| `.slopa` / `.akt` | Merges that scene's characters (with their animations), materials and textures into the open scene; its cameras and blendshape sights are left out |
+| `.aknm` | Copies the file's animations onto the current character, pairing controllers by name and checking the reference poses |
+
+**File > Export…** (Ctrl+E) opens the **Export Settings** window. Every control has hover text.
+
+- **Presets** - Default, Blender, Unity, Godot. The lit one is the target; clicking one changes only
+  the target and leaves every toggle as it is. Blender, Unity and Godot write a plain joint
+  hierarchy, no zero scales and unique clip names, so the rig and clips import directly in those
+  programs; unbaked, they write fitted keys (only the keys the motion needs).
+- **Warnings** - amber lines under the toggles name settings the target reads badly (unbaked for
+  Default, ASCII for Blender) or that do nothing in that combination. Exporting still works.
+- **Export Scene / Export Selection** - everything, or only the characters that own a selected
+  object (the character, a joint or controller, a bound mesh) plus selected unbound meshes.
+- **Only Selected Animations** - the animations selected in the Anim Bank; a selected folder
+  brings every animation inside it.
+- **Baked Animations** - a key on every frame; off writes fitted keys for Blender, Unity and Godot,
+  and the stacks' own keys and tangents for Default.
+- **Multi-FBX (one file per animation / per character)** - `<file>_<animation>.fbx`,
+  `<file>_<character>.fbx`, or both (`<file>_<character>_<animation>.fbx`); unbound meshes go to
+  `<file>_meshes.fbx` when split by character. Two animations with the same name get `_2`, `_3`…
+- **Folder path in file names** - a per-animation file name also carries the animation's Anim Bank
+  folders: `<file>_<Folder1><sep><Folder2><sep><animation>.fbx`, where `<sep>` is the text in the
+  field beside the toggle (underscore by default).
+- **Export without animations** - the rig and skin in the rest pose, no takes.
+- **Export camera targets** - the camera rigs' targets as empty nodes with their animation.
+- **Export Character node (as dummy)** - each character as an empty root above its joints and meshes.
+- **Embed Media** - the texture images inside the FBX; off writes them beside it.
+- **Use ASCII format** - the text form of FBX (Blender cannot import it).
+
+The window is not modal: the main window stays usable, so the Anim Bank and Scene panels can be
+scrolled and the selection changed while it is open (Ctrl+E brings it back to the front). While the
+window is open, the Scene panel and the Anim Bank mark (an orange bar and tint) every object
+and animation the settings would export, and a line under the toggles counts them. **Export…** then
+asks where to write; choosing the *Animation (.aknm)* type writes the exported animations as `.aknm`
+files instead (one per character). The window's choices are kept for next time. Imported FBX warnings (an unsupported layer, a missing joint) are printed to the
 console and counted in the status bar.
 
-Retargeting one character's animations onto another is **Animation > Retarget animations…** in the
-viewer (or `retarget` in [cli.md](cli.md)); so is
+Retargeting one character's animations onto another is **Retarget animations…** in the Anim Bank's
+right-click menu (or `retarget` in [cli.md](cli.md)); so is
 scene import that must not touch the open document, and batch FBX conversion.
 
 ## Preferences and keyboard shortcuts
@@ -361,6 +392,31 @@ exist. The viewer follows that map for the actions it implements: undo/redo, new
 Move/Rotate/Scale, create key, delete, copy/paste, Curves, Grid, Play, previous/next key and frame,
 controller stepping, the camera views and the layout toggle. A key the file gives to an action the
 viewer does not implement is left alone rather than stolen.
+
+## Updates
+
+At startup the viewer asks GitHub for the newest release in the background; when it is newer than
+the running build, **Update Available v&lt;version&gt;** appears on the right of the status bar. Nothing
+else happens and no window opens; a failed check (no network) is only written to the log. The
+*General preferences* row **Automatically check for updates at startup** turns the startup check off.
+
+**Help > Check for updates…** checks at once and always answers. When a newer release exists (or
+when you click the status bar notice) a window shows its notes with three buttons:
+
+- **Download and install** downloads the package for this machine, checks it against the release's
+  `SHA256SUMS`, and closes the viewer (asking about unsaved scenes first). The update is put in place
+  once the viewer has exited:
+  - an install made by the Windows setup runs the new setup over the same folder (it asks for
+    administrator rights, as the first install did);
+  - a portable folder (unpacked zip or tarball) is overwritten with the new files - your
+    `profile` and `logs` folders and anything else the package does not contain are kept - and the
+    viewer starts again.
+  If you cancel the unsaved-changes prompt, the update installs the next time the viewer closes.
+- **Open release page** opens the release on GitHub to download it yourself.
+- **Later** closes the window.
+
+A copy that cannot be updated in place (a development build, or a read-only folder on Linux) opens
+the release page instead.
 
 ## Command-line runs and screenshots
 

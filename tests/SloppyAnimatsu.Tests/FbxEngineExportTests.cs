@@ -26,10 +26,11 @@ public sealed class FbxEngineExportTests
         foreach (var preset in new[] { FbxExportPreset.Unity, FbxExportPreset.Godot, FbxExportPreset.Blender })
         {
             var options = new FbxExportOptions { Preset = preset };
-            Assert.True(options.Baked && options.PlainHierarchy && options.LinearBakedKeys && options.UniqueAnimationNames);
+            Assert.True(!options.Baked && options.FittedKeys && options.PlainHierarchy && options.LinearBakedKeys
+                && options.UniqueAnimationNames);
             Assert.Equal(1e-3f, options.MinimumScale);
         }
-        Assert.False(new FbxExportOptions { Preset = FbxExportPreset.Unity, Baked = false }.Baked);
+        Assert.True(new FbxExportOptions { Preset = FbxExportPreset.Unity, Baked = true }.Baked);
     }
 
     [Fact]
@@ -76,6 +77,31 @@ public sealed class FbxEngineExportTests
         Assert.Equal(new Vector3(180, 100, 180), picked);
     }
 
+    /// <summary>An unbaked export's sparse keys are interpolated as Euler angles by every reader, so
+    /// no channel may jump across the +-180 wrap between two keys (Unity spun a pelvis a full turn
+    /// mid-clip when it did).</summary>
+    [Fact]
+    public void Unbaked_rotation_keys_never_jump_across_the_wrap()
+    {
+        foreach (string file in new[] { "19_run.akt", "7_AddingIK.akt" })
+        {
+            if (Load(file) is not { } model) continue;
+            var fbx = new FbxScene(FbxDocument.Read(FbxExporter.Export(model, new FbxExportOptions
+            {
+                Preset = FbxExportPreset.Unity, Baked = false, Timestamp = Timestamp,
+            })));
+            foreach (var node in fbx.Stacks.SelectMany(s => s.Layers).SelectMany(l => l.CurveNodes)
+                         .Where(n => n.Property == FbxExporter.LclRotation))
+                foreach (var curve in node.Curves)
+                {
+                    if (curve == null) continue;
+                    for (int i = 1; i < curve.Values.Length; i++)
+                        Assert.True(MathF.Abs(curve.Values[i] - curve.Values[i - 1]) < 270f,
+                            $"{file} {node.Model?.Name} key {i}: {curve.Values[i - 1]} -> {curve.Values[i]}");
+                }
+        }
+    }
+
     [Fact]
     public void UniqueNames_numbers_later_duplicates_and_skips_taken_names()
     {
@@ -97,7 +123,7 @@ public sealed class FbxEngineExportTests
         var animation = character.Animations.First(a => a.Stacks.Count > 0);
         var bytes = FbxExporter.Export(model, new FbxExportOptions
         {
-            Preset = FbxExportPreset.Unity, Timestamp = Timestamp, Animations = [animation],
+            Preset = FbxExportPreset.Unity, Baked = true, Timestamp = Timestamp, Animations = [animation],
         });
         var fbx = new FbxScene(FbxDocument.Read(bytes));
         var stack = fbx.Stacks.Single(s => s.Name == animation.Name);
@@ -139,7 +165,7 @@ public sealed class FbxEngineExportTests
             .First(a => a.Stacks.Count > 0 && FbxExporter.StopOf(a) == 0);
         var fbx = new FbxScene(FbxDocument.Read(FbxExporter.Export(model, new FbxExportOptions
         {
-            Preset = FbxExportPreset.Unity, Timestamp = Timestamp, Animations = [animation],
+            Preset = FbxExportPreset.Unity, Baked = true, Timestamp = Timestamp, Animations = [animation],
         })));
         var stack = fbx.Stacks.Single();
         Assert.Equal(FbxScene.ToTicks(1 / fbx.FrameRate), stack.Stop);
@@ -152,6 +178,122 @@ public sealed class FbxEngineExportTests
             Timestamp = Timestamp, Animations = [animation], Baked = true,
         })));
         Assert.Equal(0, plain.Stacks.Single().Stop);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CurveFit_keeps_every_sample_within_the_tolerance_with_fewer_keys(bool cubic)
+    {
+        var samples = Enumerable.Range(0, 200).Select(f => 30 * MathF.Sin(f * 0.07f) + (f > 120 ? 10 : 0)).ToArray();
+        float tolerance = cubic ? 0.01f : 0.5f; // a straight-line fit of a sine needs a looser bound for few keys
+        var keys = CurveFit.Fit(samples, tolerance, cubic);
+        Assert.True(keys.Length < samples.Length / 2, $"{keys.Length} keys");
+        Assert.Equal(0, keys[0].Frame);
+        Assert.Equal(samples.Length - 1, keys[^1].Frame);
+        for (int k = 0; k + 1 < keys.Length; k++)
+        {
+            var (a, b) = (keys[k], keys[k + 1]);
+            int span = b.Frame - a.Frame;
+            for (int f = a.Frame; f <= b.Frame; f++)
+            {
+                float value = CurveFit.Hermite(a.Value, b.Value, a.SlopeOut * span, b.SlopeIn * span, (f - a.Frame) / (float)span);
+                Assert.True(MathF.Abs(value - samples[f]) <= tolerance * 1.001f, $"frame {f}: {value} != {samples[f]}");
+            }
+        }
+    }
+
+    [Fact]
+    public void An_fbx_curve_plays_cubic_user_tangents_linear_and_constant_keys()
+    {
+        // Keys at 0 s (cubic user: slope 3/s out of it, -1/s into the next key), 1 s (linear), 2 s (constant), 3 s.
+        var curve = TestCurve(
+            times: [0, 1, 2, 3],
+            values: [0, 1, 3, 5],
+            flags: [0x0C08, 0x0104, 0x0102, 0x0102],
+            data: [3, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        Assert.Equal(0f, curve.Evaluate(0), 4);
+        float u = 0.5f;
+        float hermite = CurveFit.Hermite(0, 1, 3, -1, u);
+        Assert.Equal(hermite, curve.Evaluate(FbxScene.ToTicks(0.5)), 4);
+        Assert.Equal(2f, curve.Evaluate(FbxScene.ToTicks(1.5)), 4);
+        Assert.Equal(3f, curve.Evaluate(FbxScene.ToTicks(2.5)), 4);
+        Assert.Equal(5f, curve.Evaluate(FbxScene.ToTicks(9)), 4);
+    }
+
+    [Fact]
+    public void A_fitted_export_reimports_with_fewer_keys_and_the_same_pose()
+    {
+        if (Load("19_run.akt") is not { } model) return;
+        var character = model.Scene.Characters.First(c => c.Animations.Any(a => a.Stacks.Count > 0));
+        var animation = character.Animations.First(a => a.Stacks.Count > 0);
+        var bytes = FbxExporter.Export(model, new FbxExportOptions
+        {
+            Preset = FbxExportPreset.Unity, Baked = false, Timestamp = Timestamp, Animations = [animation],
+        });
+        var fbx = new FbxScene(FbxDocument.Read(bytes));
+        int stop = FbxExporter.StopOf(animation);
+        var curves = fbx.Stacks.Single().Layers.SelectMany(l => l.CurveNodes).SelectMany(n => n.Curves).Where(c => c != null).ToList();
+        Assert.Contains(curves, c => c!.Times.Length < stop + 1);
+
+        var imported = FbxImporter.Import(FbxDocument.Read(bytes), null);
+        var importedCharacter = imported.Scene.Characters.First(c => c.Name == character.Name);
+        var importedAnimation = importedCharacter.Animations.Single(a => a.Stacks.Count > 0);
+        Assert.True(importedAnimation.Stacks.All(s => s.Keys.Count <= stop + 2));
+
+        var source = new PoseEvaluator(character);
+        var target = new PoseEvaluator(importedCharacter);
+        var joints = character.Joints.Where(j => source.IndexOf(j) >= 0).ToList();
+        var importedJoints = importedCharacter.Joints.Where(j => target.IndexOf(j) >= 0)
+            .GroupBy(j => j.Name).ToDictionary(g => g.Key!, g => g.First());
+        var root = joints.First(j => !joints.Contains(j.Parent3D as Joint));
+        for (int frame = 0; frame <= stop; frame++)
+        {
+            var expectedWorlds = source.WorldMatrices(animation, frame);
+            var gotWorlds = target.WorldMatrices(importedAnimation, frame);
+            Matrix4x4.Invert(expectedWorlds[source.IndexOf(root)], out var expectedRoot);
+            Matrix4x4.Invert(gotWorlds[target.IndexOf(importedJoints[root.Name!])], out var gotRoot);
+            var expected = joints.ToDictionary(j => j, j => (expectedWorlds[source.IndexOf(j)] * expectedRoot).Translation);
+            float tolerance = 2e-3f * MathF.Max(1f, expected.Values.Max(v => v.Length()));
+            foreach (var joint in joints)
+            {
+                if (!importedJoints.TryGetValue(joint.Name!, out var importedJoint)) continue;
+                var got = (gotWorlds[target.IndexOf(importedJoint)] * gotRoot).Translation;
+                Assert.True(Vector3.Distance(expected[joint], got) <= tolerance,
+                    $"{joint.Name} frame {frame}: {got} != {expected[joint]}");
+            }
+        }
+    }
+
+    [Fact]
+    public void A_baked_export_reimports_with_fewer_keys_unless_asked_to_keep_them()
+    {
+        if (Load("19_run.akt") is not { } model) return;
+        var animation = model.Scene.Characters.SelectMany(c => c.Animations).Where(a => a.Stacks.Count > 0)
+            .MaxBy(FbxExporter.StopOf)!;
+        var document = FbxDocument.Read(FbxExporter.Export(model, new FbxExportOptions
+        {
+            Preset = FbxExportPreset.Unity, Baked = true, Timestamp = Timestamp, Animations = [animation],
+        }));
+        int KeyCount(bool fit) => FbxImporter.Import(document, null, new FbxImportOptions { FitKeys = fit })
+            .Scene.Characters.SelectMany(c => c.Animations).Where(a => a.Stacks.Count > 0)
+            .Sum(a => a.Stacks.Sum(s => s.Keys.Count));
+        int stop = FbxExporter.StopOf(animation);
+        Assert.True(KeyCount(false) >= stop + 1);
+        Assert.True(KeyCount(true) < KeyCount(false), $"{KeyCount(true)} !< {KeyCount(false)}");
+    }
+
+    private static FbxCurve TestCurve(double[] times, float[] values, int[] flags, float[] data)
+    {
+        static FbxNode Leaf(string name, object value) => new(name, [value], []);
+        var node = new FbxNode("AnimationCurve", [], [
+            Leaf("KeyTime", times.Select(FbxScene.ToTicks).ToArray()),
+            Leaf("KeyValueFloat", values),
+            Leaf("KeyAttrFlags", flags),
+            Leaf("KeyAttrDataFloat", data),
+            Leaf("KeyAttrRefCount", Enumerable.Repeat(1, flags.Length).ToArray()),
+        ]);
+        return new FbxCurve(1, node);
     }
 
     private static SceneModel? Load(string fileName) =>

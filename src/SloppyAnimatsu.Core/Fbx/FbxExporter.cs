@@ -10,7 +10,7 @@ namespace SloppyAnimatsu.Core.Fbx;
 public enum FbxExportPreset { Plain, Unity, Godot, Blender }
 
 /// <summary>What an FBX export contains.</summary>
-public sealed class FbxExportOptions
+public sealed record FbxExportOptions
 {
     private readonly bool? _baked, _plainHierarchy, _linearBakedKeys;
     private readonly float? _minimumScale;
@@ -21,8 +21,8 @@ public sealed class FbxExportOptions
     private bool ForEngine => Preset != FbxExportPreset.Plain;
 
     /// <summary>Bake one key per frame from the evaluator instead of writing the stacks' own keys
-    /// (default: on for the engine presets).</summary>
-    public bool Baked { get => _baked ?? ForEngine; init => _baked = value; }
+    /// (default off; the engine presets then write fitted keys, see <see cref="FittedKeys"/>).</summary>
+    public bool Baked { get => _baked ?? false; init => _baked = value; }
 
     /// <summary>
     /// Bake against a plain hierarchy: every model InheritType 1 (RSrs), each joint's local
@@ -38,6 +38,20 @@ public sealed class FbxExportOptions
     /// readers produce non-normalised quaternions and NaN children.</summary>
     public float MinimumScale { get => _minimumScale ?? (ForEngine ? 1e-3f : 0f); init => _minimumScale = value; }
 
+    private readonly bool? _fittedKeys, _fittedCubic;
+
+    /// <summary>
+    /// When not baked: sample every frame like a bake, then write only as many keys per curve as it
+    /// takes to reproduce every frame within a small tolerance, instead of the stacks' own keys
+    /// (default: on for the engine presets). Engines interpolate Euler keys and ignore the app's
+    /// rotation tangents, so the stacks' own keys do not play back the same there.
+    /// </summary>
+    public bool FittedKeys { get => _fittedKeys ?? ForEngine; init => _fittedKeys = value; }
+
+    /// <summary>Fitted keys are cubic with their own slopes (off: linear keys). Default off for
+    /// Blender, whose importer joins keys with straight lines whatever their tangents say.</summary>
+    public bool FittedCubic { get => _fittedCubic ?? Preset != FbxExportPreset.Blender; init => _fittedCubic = value; }
+
     private readonly bool? _uniqueAnimationNames;
 
     /// <summary>Give animations that share a name a numbered one (<c>Walk</c>, <c>Walk_2</c>), as
@@ -50,7 +64,24 @@ public sealed class FbxExportOptions
     /// <summary>The characters to export; null = every character of the scene.</summary>
     public IReadOnlyCollection<Character>? Characters { get; init; }
 
-    /// <summary>Folder the texture file names point into (the image bytes are embedded either way).</summary>
+    /// <summary>Meshes bound to no character to export; null = all of them when <see cref="Characters"/>
+    /// is null, none otherwise.</summary>
+    public IReadOnlyCollection<Mesh>? LooseMeshes { get; init; }
+
+    /// <summary>Write each character as a Null model above its joints and meshes (off: they become
+    /// scene roots, with the character's transform folded into theirs).</summary>
+    public bool ExportCharacterNode { get; init; } = true;
+
+    /// <summary>Write camera targets as Null models with their animation.</summary>
+    public bool ExportCameraTargets { get; init; }
+
+    /// <summary>Embed the texture images in the file (off: only their file names are written).</summary>
+    public bool EmbedMedia { get; init; } = true;
+
+    /// <summary>Write the FBX 7.4 ASCII text format instead of binary.</summary>
+    public bool Ascii { get; init; }
+
+    /// <summary>Folder the texture file names point into.</summary>
     public string? TextureDirectory { get; init; }
 
     /// <summary>The path written into <c>SceneInfo</c>; null = no path.</summary>
@@ -58,6 +89,36 @@ public sealed class FbxExportOptions
 
     /// <summary>Creation time written into the header.</summary>
     public DateTime Timestamp { get; init; } = DateTime.Now;
+
+    /// <summary>
+    /// Combinations of these options that the target program reads badly or that do not do what
+    /// they look like they do, one sentence each; empty when nothing is wrong. Exporting still works.
+    /// </summary>
+    public IReadOnlyList<string> CompatibilityWarnings()
+    {
+        var warnings = new List<string>();
+        string? engine = Preset switch
+        {
+            FbxExportPreset.Unity => "Unity",
+            FbxExportPreset.Godot => "Godot",
+            FbxExportPreset.Blender => "Blender",
+            _ => null,
+        };
+        if (Animations is not { Count: 0 })
+        {
+            if (!Baked && engine != null && !FittedKeys)
+                warnings.Add($"Not baked and not fitted: {engine} blends the scene's own rotation keys as Euler angles, so joints can twist or flip between keys.");
+            if (Baked && engine != null && !LinearBakedKeys)
+                warnings.Add($"Step baked keys: {engine} holds each frame's pose until the next frame instead of blending, which stutters at other frame rates.");
+            if (!Baked && FittedKeys && FittedCubic && Preset == FbxExportPreset.Blender)
+                warnings.Add("Cubic fitted keys for Blender: its FBX importer ignores the tangents and joins keys with straight lines, so the motion is off between keys. Use linear fitted keys.");
+        }
+        if (Ascii && Preset == FbxExportPreset.Blender)
+            warnings.Add("ASCII format for Blender: Blender cannot import ASCII FBX files.");
+        if (engine != null && Baked && MinimumScale <= 0)
+            warnings.Add($"No smallest scale: a joint scaled to zero makes {engine} compute invalid rotations for its children.");
+        return warnings;
+    }
 }
 
 /// <summary>
@@ -74,13 +135,85 @@ public static class FbxExporter
     /// <summary>Exports to <paramref name="path"/>, reporting 0 to 1: the scene and each animation, the encoding, the file.</summary>
     public static void Export(SceneModel model, string path, FbxExportOptions? options, IProgress<double>? progress)
     {
-        var nodes = new Builder(model, options ?? new FbxExportOptions()).Build(progress.Slice(0, 0.75));
-        var bytes = FbxWriter.Write(nodes, progress.Slice(0.75, 0.95));
+        options ??= new FbxExportOptions();
+        var nodes = new Builder(model, options).Build(progress.Slice(0, 0.75));
+        var bytes = Encode(nodes, options, progress.Slice(0.75, 0.95));
         WriteProgress.WriteFile(path, bytes, progress.Slice(0.95, 1));
     }
 
-    public static byte[] Export(SceneModel model, FbxExportOptions? options = null) =>
-        FbxWriter.Write(new Builder(model, options ?? new FbxExportOptions()).Build());
+    public static byte[] Export(SceneModel model, FbxExportOptions? options = null)
+    {
+        options ??= new FbxExportOptions();
+        return Encode(new Builder(model, options).Build(), options, null);
+    }
+
+    private static byte[] Encode(IReadOnlyList<FbxOutNode> nodes, FbxExportOptions options, IProgress<double>? progress) =>
+        options.Ascii ? FbxAsciiWriter.Write(nodes, progress) : FbxWriter.Write(nodes, progress);
+
+    // -- what an export writes -------------------------------------------------------------
+
+    /// <summary>The characters an export writes, in scene order.</summary>
+    public static List<Character> ExportedCharacters(SceneModel model, FbxExportOptions options) =>
+        (options.Characters ?? model.Scene.Characters.ToList()).ToList();
+
+    /// <summary>The animations an export writes, in the characters' order.</summary>
+    public static List<Animation> ExportedAnimations(SceneModel model, FbxExportOptions options) =>
+        ExportedCharacters(model, options).SelectMany(c => c.Animations)
+            .Where(a => options.Animations == null || options.Animations.Contains(a)).ToList();
+
+    /// <summary>
+    /// The objects an export writes as models, with their FBX model kind, in the order they are
+    /// written: each character (its Null, joints, camera targets, meshes), then the loose meshes.
+    /// The plain groups between them (<see cref="ExportedObjects"/>) come on top.
+    /// </summary>
+    public static List<(Object3D Object, string Kind)> ExportedModels(SceneModel model, FbxExportOptions options)
+    {
+        var result = new List<(Object3D, string)>();
+        var seen = new HashSet<Object3D>(ReferenceEqualityComparer.Instance);
+        void Add(Object3D o, string kind)
+        {
+            if (seen.Add(o)) result.Add((o, kind));
+        }
+        foreach (var character in ExportedCharacters(model, options))
+        {
+            if (options.ExportCharacterNode) Add(character, "Null");
+            foreach (var joint in character.Descendants<Joint>()) Add(joint, "LimbNode");
+            if (options.ExportCameraTargets)
+                foreach (var target in character.Descendants<CameraTarget>()) Add(target, "Null");
+            foreach (var mesh in character.Meshes) Add(mesh, "Mesh");
+        }
+        foreach (var mesh in model.Scene.Meshes)
+        {
+            if (seen.Contains(mesh) || mesh.BindPose?.Character != null) continue;
+            if (options.LooseMeshes?.Contains(mesh) ?? options.Characters == null) Add(mesh, "Mesh");
+        }
+        return result;
+    }
+
+    /// <summary>Every object an export writes as a model: <see cref="ExportedModels"/> and the plain
+    /// groups between them and their character.</summary>
+    public static HashSet<Object3D> ExportedObjects(SceneModel model, FbxExportOptions options)
+    {
+        var models = ExportedModels(model, options);
+        var set = new HashSet<Object3D>(models.Select(m => m.Object), ReferenceEqualityComparer.Instance);
+        foreach (var (o, _) in models)
+            foreach (var container in ContainerChain(o, set, options))
+                set.Add(container);
+        return set;
+    }
+
+    /// <summary>The plain groups above <paramref name="exported"/> up to its nearest exported ancestor
+    /// that become container models, top first. Controllers are not models, nor a character whose node
+    /// is not exported.</summary>
+    internal static List<Object3D> ContainerChain(Object3D exported, ICollection<Object3D> models, FbxExportOptions options)
+    {
+        var chain = new List<Object3D>();
+        for (var parent = exported.Parent3D; parent is not null && !models.Contains(parent); parent = parent.Parent3D)
+            if (parent is not Controller3D && !(parent is Character && !options.ExportCharacterNode))
+                chain.Add(parent);
+        chain.Reverse();
+        return chain;
+    }
 
     /// <summary>FBX model property names.</summary>
     public const string LclTranslation = "Lcl Translation";
@@ -252,7 +385,10 @@ public static class FbxExporter
         private readonly Dictionary<Character, Transform[]> _plainRest = new(ReferenceEqualityComparer.Instance);
 
         /// <summary>The plain-hierarchy bake is on.</summary>
-        private bool Plain => _options.Baked && _options.PlainHierarchy;
+        /// <summary>Animation is sampled per frame (baked, or fitted from per-frame samples).</summary>
+        private bool Sampled => _options.Baked || _options.FittedKeys;
+
+        private bool Plain => Sampled && _options.PlainHierarchy;
 
         private uint FrameRate => _model.Scene.FrameRate;
 
@@ -264,15 +400,14 @@ public static class FbxExporter
 
         public IReadOnlyList<FbxOutNode> Build(IProgress<double>? progress = null)
         {
-            var characters = (_options.Characters ?? _model.Scene.Characters.ToList()).ToList();
-            var animations = (_options.Animations ?? characters.SelectMany(c => c.Animations).ToList()).ToList();
+            var animationsInOrder = ExportedAnimations(_model, _options);
 
-            MarkAnimatedProperties(animations);
-            foreach (var character in characters) AddCharacter(character);
-            foreach (var mesh in _model.Scene.Meshes)
-                if (!_modelIds.ContainsKey(mesh))
-                    AddMesh(mesh);
-            var animationsInOrder = characters.SelectMany(c => c.Animations).Where(animations.Contains).ToList();
+            MarkAnimatedProperties(animationsInOrder);
+            foreach (var (o, kind) in ExportedModels(_model, _options))
+            {
+                if (kind == "Mesh") AddMesh((Mesh)o);
+                else AddModel(o, kind);
+            }
             if (_options.UniqueAnimationNames)
                 _stackNames = UniqueNames(animationsInOrder.Where(a => a.Character != null && a.Stacks.Count > 0));
             progress?.Report(0.1);
@@ -295,17 +430,6 @@ public static class FbxExporter
 
         // -- scene objects -------------------------------------------------------------------
 
-        private void AddCharacter(Character character)
-        {
-            AddModel(character, "Null");
-            foreach (var joint in character.Descendants<Joint>())
-                if (!_modelIds.ContainsKey(joint))
-                    AddModel(joint, "LimbNode");
-            foreach (var mesh in character.Meshes)
-                if (!_modelIds.ContainsKey(mesh))
-                    AddMesh(mesh);
-        }
-
         /// <summary>
         /// The plain <c>CObject3D</c> groups an imported scene keeps between a character and its
         /// meshes (`Skin`, `Skin_CitroKnight`, `Props_L`, `Props_R`) are models of their own: the
@@ -314,16 +438,9 @@ public static class FbxExporter
         /// </summary>
         private void AddContainerModels(Object3D exported)
         {
-            var chain = new List<Object3D>();
-            for (var parent = exported.Parent3D;
-                 parent is not null && !_modelIds.ContainsKey(parent);
-                 parent = parent.Parent3D)
-                chain.Add(parent);
-            for (int i = chain.Count - 1; i >= 0; i--)
-            {
-                if (chain[i] is Controller3D || _modelIds.ContainsKey(chain[i])) continue;
-                AddModel(chain[i], "Null");
-            }
+            foreach (var container in ContainerChain(exported, _modelIds.Keys, _options))
+                if (!_modelIds.ContainsKey(container))
+                    AddModel(container, "Null");
         }
 
         private long AddModel(Object3D o, string kind)
@@ -363,19 +480,32 @@ public static class FbxExporter
         /// </summary>
         private Transform LocalTransform(Object3D o)
         {
-            if (o is Joint joint && joint.Ancestor<Character>() is { } character)
+            if (o is Joint or CameraTarget && o.Ancestor<Character>() is { } character)
             {
                 var evaluator = Evaluator(character);
-                int index = evaluator.IndexOf(joint);
+                int index = evaluator.IndexOf(o);
                 if (index >= 0)
                 {
-                    if (!Plain) return evaluator.RestTransforms[index];
+                    if (!Plain) return Folded(o, evaluator.RestTransforms[index]);
                     if (!_plainRest.TryGetValue(character, out var rest))
                         _plainRest[character] = rest = PlainLocals(character, null, 0);
                     return rest[index];
                 }
             }
-            return Transform.FromMatrixLoose(o.LocalMatrix);
+            return Folded(o, Transform.FromMatrixLoose(o.LocalMatrix));
+        }
+
+        /// <summary>
+        /// With no character node, a model whose FBX parent would have been its character is a scene
+        /// root: its local takes the character's world on top so it stays where it was.
+        /// </summary>
+        private Transform Folded(Object3D o, Transform local)
+        {
+            if (_options.ExportCharacterNode) return local;
+            var parent = o.Parent3D;
+            while (parent is Controller3D) parent = parent.Parent3D;
+            if (parent is not Character character || character.WorldMatrix.IsIdentity) return local;
+            return DecomposeLoose(local.ToMatrix() * character.WorldMatrix, local, 0);
         }
 
         /// <summary>Writes a <c>P</c> entry when <paramref name="value"/> differs from <paramref name="identity"/>.</summary>
@@ -609,7 +739,14 @@ public static class FbxExporter
             video.Add("UseMipMap", 0);
             video.Add("Filename", fileName);
             video.Add("RelativeFilename", relative);
-            if (texture.Data.Length > 0) video.Add("Content", texture.Data);
+            if (_options.EmbedMedia && texture.Data.Length > 0) video.Add("Content", texture.Data);
+            else if (!_options.EmbedMedia && texture.Data.Length > 0 && _options.TextureDirectory is { Length: > 0 } folder)
+            {
+                // Not embedded: the image goes beside the FBX under the name the file points at,
+                // unless a file of that name is already there.
+                string target = Path.Combine(folder, Path.GetFileName(relative));
+                if (!File.Exists(target)) File.WriteAllBytes(target, texture.Data);
+            }
             _videos.Add(video);
 
             long textureId = NextId();
@@ -768,8 +905,8 @@ public static class FbxExporter
             _stacks.Add(stackNode);
 
             var evaluator = Evaluator(character);
-            int stop = _options.Baked
-                ? AddBakedLayers(animation, evaluator, stackId)
+            int stop = Sampled
+                ? AddBakedLayers(animation, evaluator, stackId, fitted: !_options.Baked)
                 : AddUnbakedLayers(animation, evaluator, stackId);
 
             stackNode.Add("Properties70").Add("P", "LocalStop", "KTime", "Time", "", Ticks(stop));
@@ -783,8 +920,10 @@ public static class FbxExporter
             return evaluator;
         }
 
-        private int AddBakedLayers(Animation animation, PoseEvaluator evaluator, long stackId)
+        /// <param name="fitted">Write fitted keys (<see cref="CurveFit"/>) instead of one key per frame.</param>
+        private int AddBakedLayers(Animation animation, PoseEvaluator evaluator, long stackId, bool fitted = false)
         {
+            bool continuous = _options.LinearBakedKeys || fitted;
             int stop = animation.Stacks.Max(StopOf);
             var joints = JointModels(animation.Character!);
             int frames = stop + 1;
@@ -807,9 +946,10 @@ public static class FbxExporter
                 {
                     int index = indices[j];
                     var value = index >= 0 && index < local.Length ? local[index] : Transform.Identity;
+                    if (!Plain) value = Folded(joints[j].Joint, value);
                     translations[j][frame] = value.Translation;
                     var euler = EulerDegrees(value.Rotation);
-                    rotations[j][frame] = _options.LinearBakedKeys && frame > 0
+                    rotations[j][frame] = continuous && frame > 0
                         ? ContinuousEuler(rotations[j][frame - 1], euler)
                         : euler;
                     scales[j][frame] = value.Scale;
@@ -818,7 +958,7 @@ public static class FbxExporter
 
             // A one-frame pose gives a zero-length take, which Unity imports as an empty clip (the
             // rest pose). Engine presets hold the pose for one more frame instead.
-            if (_options.LinearBakedKeys && frames == 1)
+            if (continuous && frames == 1)
             {
                 for (int j = 0; j < joints.Count; j++)
                 {
@@ -831,11 +971,28 @@ public static class FbxExporter
             }
 
             long layerId = NextId();
-            string layerName = "Baked frames\0\u0001AnimLayer";
+            string layerName = (fitted ? "Fitted keys" : "Baked frames") + "\0\u0001AnimLayer";
             var layer = new FbxOutNode("AnimationLayer").With(layerId, layerName, "");
             layer.Add("Properties70").Add("P", "BlendMode", "enum", "", "", 2);
             _layers.Add(layer);
             Connect(layerId, stackId, null);
+
+            if (fitted)
+            {
+                // Tolerances per frame: rotation in degrees, scale as a factor, translation as a
+                // fraction of the character's rest size. A joint chain adds its joints' errors, so
+                // these stay well under what an engine's own key reduction allows (0.5 degrees).
+                const float rotationTolerance = 0.01f, scaleTolerance = 1e-4f;
+                float translationTolerance = 2e-5f * RestSize(evaluator);
+                for (int j = 0; j < joints.Count; j++)
+                {
+                    var defaults = LocalTransform(joints[j].Joint);
+                    AddFittedCurveNode(layerId, joints[j].Model, PropertyTranslation, translations[j], translationTolerance, defaults.Translation);
+                    AddFittedCurveNode(layerId, joints[j].Model, PropertyRotation, rotations[j], rotationTolerance, EulerDegrees(defaults.Rotation));
+                    AddFittedCurveNode(layerId, joints[j].Model, PropertyScaling, scales[j], scaleTolerance, defaults.Scale);
+                }
+                return stop;
+            }
 
             var keyTimes = Enumerable.Range(0, frames).Select(f => Ticks(f)).ToArray();
             var frameNumbers = Enumerable.Range(0, frames).ToArray();
@@ -879,7 +1036,7 @@ public static class FbxExporter
                     : times.Select(t => evaluator.StackLocalTransforms(stack, t, out _)).ToArray();
                 foreach (var track in stack.Tracks)
                 {
-                    if (track.Target is not Joint joint) continue;
+                    if (track.Target is not (Joint or CameraTarget) || track.Target is not { } joint) continue;
                     if (!_modelIds.TryGetValue(joint, out long modelId)) continue;
                     int index = evaluator.IndexOf(joint);
                     if (index < 0) continue;
@@ -891,9 +1048,13 @@ public static class FbxExporter
                     {
                         var value = stack.IsAdditive
                             ? evaluator.LayerValue(stack, track, times[k], out _)
-                            : index < values[k].Length ? values[k][index] : Transform.Identity;
+                            : Folded(joint, index < values[k].Length ? values[k][index] : Transform.Identity);
                         translations[k] = value.Translation;
-                        rotations[k] = EulerDegrees(value.Rotation);
+                        // Readers interpolate these keys as Euler angles, so each key takes the
+                        // equivalent triple nearest the previous one; independent angles jump by
+                        // ~360 degrees across the +-180 wrap and spin the joint between the keys.
+                        var euler = EulerDegrees(value.Rotation);
+                        rotations[k] = k > 0 ? ContinuousEuler(rotations[k - 1], euler) : euler;
                         scales[k] = value.Scale;
                     }
                     var frames = times.Select(Ticks).ToArray();
@@ -976,23 +1137,7 @@ public static class FbxExporter
         private void AddCurveNode(long layerId, long modelId, string property, IReadOnlyList<long> keyTimes, IReadOnlyList<int> frames,
             Vector3[] values, int channelBase, IReadOnlyList<StackKey>? keys, IReadOnlyList<TangentMode[]>? modes, Vector3 defaults)
         {
-            long id = NextId();
-            string shortName = property switch
-            {
-                PropertyTranslation => "T",
-                PropertyRotation => "R",
-                _ => "S",
-            };
-            string curveName = shortName + "\0\u0001AnimCurveNode";
-            var node = new FbxOutNode("AnimationCurveNode").With(id, curveName, "");
-            var properties = node.Add("Properties70");
-            foreach (var axis in new[] { "d|X", "d|Y", "d|Z" })
-                properties.Add("P", axis, "Number", "", "A", 0.0);
-            _curveNodes.Add(node);
-            Connect(id, layerId, null);
-            Connect(id, modelId, property);
-
-            var axes = new[] { "d|X", "d|Y", "d|Z" };
+            long id = NewCurveNode(layerId, modelId, property);
             for (int axis = 0; axis < 3; axis++)
             {
                 var flags = new int[frames.Count];
@@ -1002,19 +1147,109 @@ public static class FbxExporter
                     int keyIndex = IndexOfKey(keys!, frames[i]);
                     flags[i] = keyIndex >= 0 && keyIndex < modes.Count ? KeyFlags(modes[keyIndex], channelBase + axis) : 0x2108;
                 }
-                long curveId = NextId();
-                string name = "\0\u0001AnimCurve";
-                var curve = new FbxOutNode("AnimationCurve").With(curveId, name, "");
-                curve.Add("Default", (double)(axis == 0 ? defaults.X : axis == 1 ? defaults.Y : defaults.Z));
-                curve.Add("KeyVer", 4008);
-                curve.Add("KeyTime", keyTimes.ToArray());
-                curve.Add("KeyValueFloat", values.Select(v => axis == 0 ? v.X : axis == 1 ? v.Y : v.Z).ToArray());
-                curve.Add("KeyAttrFlags", flags);
-                curve.Add("KeyAttrDataFloat", new float[frames.Count * 4]);
-                curve.Add("KeyAttrRefCount", Enumerable.Repeat(1, frames.Count).ToArray());
-                _curves.Add(curve);
-                Connect(curveId, id, axes[axis]);
+                AddCurve(id, axis, Component(defaults, axis), keyTimes.ToArray(),
+                    values.Select(v => Component(v, axis)).ToArray(), flags, new float[frames.Count * 4]);
             }
+        }
+
+        private static readonly string[] CurveAxes = ["d|X", "d|Y", "d|Z"];
+
+        private static float Component(Vector3 v, int axis) => axis == 0 ? v.X : axis == 1 ? v.Y : v.Z;
+
+        /// <summary>An AnimationCurveNode for one property of a model, connected to the layer and the model.</summary>
+        private long NewCurveNode(long layerId, long modelId, string property)
+        {
+            long id = NextId();
+            string shortName = property switch
+            {
+                PropertyTranslation => "T",
+                PropertyRotation => "R",
+                _ => "S",
+            };
+            var node = new FbxOutNode("AnimationCurveNode").With(id, shortName + "\0\u0001AnimCurveNode", "");
+            var properties = node.Add("Properties70");
+            foreach (var axis in CurveAxes)
+                properties.Add("P", axis, "Number", "", "A", 0.0);
+            _curveNodes.Add(node);
+            Connect(id, layerId, null);
+            Connect(id, modelId, property);
+            return id;
+        }
+
+        /// <summary>One AnimationCurve (one axis) under a curve node; <paramref name="data"/> holds four floats per key.</summary>
+        private void AddCurve(long nodeId, int axis, float defaultValue, long[] times, float[] values, int[] flags, float[] data)
+        {
+            long curveId = NextId();
+            var curve = new FbxOutNode("AnimationCurve").With(curveId, "\0\u0001AnimCurve", "");
+            curve.Add("Default", (double)defaultValue);
+            curve.Add("KeyVer", 4008);
+            curve.Add("KeyTime", times);
+            curve.Add("KeyValueFloat", values);
+            curve.Add("KeyAttrFlags", flags);
+            curve.Add("KeyAttrDataFloat", data);
+            curve.Add("KeyAttrRefCount", Enumerable.Repeat(1, times.Length).ToArray());
+            _curves.Add(curve);
+            Connect(curveId, nodeId, CurveAxes[axis]);
+        }
+
+        /// <summary>FBX key flags: cubic interpolation (0x08) with user slopes (0x400) that may differ on either side (0x800).</summary>
+        private const int CubicUserBrokenKey = 0x0C08;
+
+        /// <summary>FBX key flags: linear interpolation (0x04) with auto tangents (0x100).</summary>
+        private const int LinearKey = 0x0104;
+
+        /// <summary>The default tangent weights (1/3 each side, as two 16-bit fixed-point values of
+        /// 1/10000), stored in the float slot of a key's attribute data; unused unless weighted.</summary>
+        private static readonly float DefaultTangentWeights = BitConverter.Int32BitsToSingle(0x0D050D05);
+
+        /// <summary>
+        /// One property's three curves from per-frame samples, each reduced to the keys
+        /// <see cref="CurveFit"/> needs to stay within <paramref name="tolerance"/> on every frame.
+        /// A cubic key stores [right slope, next key's left slope, weights, velocity], slopes per second.
+        /// </summary>
+        private void AddFittedCurveNode(long layerId, long modelId, string property, Vector3[] samples, float tolerance, Vector3 defaults)
+        {
+            long id = NewCurveNode(layerId, modelId, property);
+            bool cubic = _options.FittedCubic;
+            var series = new float[samples.Length];
+            for (int axis = 0; axis < 3; axis++)
+            {
+                for (int i = 0; i < samples.Length; i++) series[i] = Component(samples[i], axis);
+                var keys = CurveFit.Fit(series, tolerance, cubic);
+                var times = keys.Select(k => Ticks(k.Frame)).ToArray();
+                var values = keys.Select(k => k.Value).ToArray();
+                var flags = Enumerable.Repeat(cubic ? CubicUserBrokenKey : LinearKey, keys.Length).ToArray();
+                var data = new float[keys.Length * 4];
+                for (int k = 0; k < keys.Length; k++)
+                {
+                    if (cubic)
+                    {
+                        data[k * 4] = keys[k].SlopeOut * FrameRate;
+                        data[k * 4 + 1] = k + 1 < keys.Length ? keys[k + 1].SlopeIn * FrameRate : 0;
+                    }
+                    data[k * 4 + 2] = DefaultTangentWeights;
+                }
+                AddCurve(id, axis, Component(defaults, axis), times, values, flags, data);
+            }
+        }
+
+        /// <summary>The diagonal of the box around the joints' rest positions (at least 1), the scale
+        /// the translation tolerance of a fit is taken from.</summary>
+        private static float RestSize(PoseEvaluator evaluator)
+        {
+            var worlds = evaluator.WorldMatrices(null, 0);
+            if (worlds.Length == 0) return 1;
+            var min = new Vector3(float.MaxValue);
+            var max = new Vector3(float.MinValue);
+            foreach (var w in worlds)
+            {
+                var p = w.Translation;
+                if (!IsFinite(p)) continue;
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+            }
+            float size = max.X >= min.X ? Vector3.Distance(min, max) : 0;
+            return size > 1e-6f ? size : 1;
         }
 
         /// <summary>
@@ -1037,7 +1272,7 @@ public static class FbxExporter
                 if (o is null) return Matrix4x4.Identity;
                 if (rebuilt.TryGetValue(o, out var cached)) return cached;
                 var parentWorld = World(FbxParent(o));
-                int index = o is Joint ? evaluator.IndexOf(o) : -1;
+                int index = o is Joint or CameraTarget ? evaluator.IndexOf(o) : -1;
                 Transform local;
                 if (index >= 0 && index < worlds.Length && !IsFinite(worlds[index]))
                 {
@@ -1069,6 +1304,8 @@ public static class FbxExporter
             }
 
             foreach (var joint in character.Joints) World(joint);
+            if (_options.ExportCameraTargets)
+                foreach (var target in character.Descendants<CameraTarget>()) World(target);
             return result;
         }
 
@@ -1095,16 +1332,20 @@ public static class FbxExporter
 
         /// <summary>The object's parent model in the FBX: the nearest ancestor that is not a
         /// controller (controllers are not models; plain groups become container models).</summary>
-        private static Object3D? FbxParent(Object3D o)
+        private Object3D? FbxParent(Object3D o)
         {
             var parent = o.Parent3D;
-            while (parent is Controller3D) parent = parent.Parent3D;
+            while (parent is Controller3D || (parent is Character && !_options.ExportCharacterNode))
+                parent = parent.Parent3D;
             return parent;
         }
 
-        /// <summary>The character's joints that have a model, in controller order.</summary>
-        private List<(Joint Joint, long Model)> JointModels(Character character) =>
-            character.Joints.Where(j => _modelIds.ContainsKey(j)).Select(j => (j, _modelIds[j])).ToList();
+        /// <summary>The character's joints that have a model, in controller order, then its exported
+        /// camera targets.</summary>
+        private List<(Object3D Joint, long Model)> JointModels(Character character) =>
+            character.Joints.Cast<Object3D>()
+                .Concat(_options.ExportCameraTargets ? character.Descendants<CameraTarget>() : [])
+                .Where(j => _modelIds.ContainsKey(j)).Select(j => (j, _modelIds[j])).ToList();
 
         private void AddTake(string name, int stop)
         {
