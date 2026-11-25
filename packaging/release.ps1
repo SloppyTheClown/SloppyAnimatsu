@@ -5,7 +5,8 @@ Refreshes the local release folder (SloppyAnimatsu\release) and the desktop shor
 .DESCRIPTION
 Publishes SloppyAnimatsu.Viewer and SloppyAnimatsu.Cli for win-x64 (self-contained, Release) into a staging
 folder, then swaps it in as SloppyAnimatsu\release, so a failed build never leaves a half-written
-release. Afterwards the desktop shortcut "Sloppy Animatsu.lnk" is (re)written to point at the viewer
+release. The folder carries DEV_BUILD.txt, so the viewer's updater and the Windows setup never
+overwrite it with an official build. Afterwards the desktop shortcut "Sloppy Animatsu (dev).lnk" is (re)written to point at the viewer
 exe in that folder; run this again whenever the release path or the exe name changes and the
 shortcut follows. The version comes from Directory.Build.props and is written to
 release\VERSION.txt with the build time.
@@ -17,7 +18,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging\release.ps1
 #>
 param(
     [string]$ReleaseDir = '',
-    [string]$ShortcutName = 'Sloppy Animatsu'
+    # Not "Sloppy Animatsu": the Windows setup puts a shortcut of that name on the all-users desktop,
+    # and two same-named desktop shortcuts show as one, hiding which build a click starts.
+    [string]$ShortcutName = 'Sloppy Animatsu (dev)'
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +62,12 @@ Set-Content -LiteralPath (Join-Path $staging 'VERSION.txt') -Encoding ascii -Val
     "SloppyAnimatsu $version (win-x64)",
     "Built $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 )
+# Marks this folder as a developer release: the viewer's updater does not replace it with an
+# official release, and the Windows setup refuses to install into it (UpdateCheck.DevelopmentBuildMarker).
+Set-Content -LiteralPath (Join-Path $staging 'DEV_BUILD.txt') -Encoding ascii -Value @(
+    "Local developer release made by packaging\release.ps1.",
+    "The updater and the setup leave this folder alone; rerun release.ps1 to refresh it."
+)
 
 $exe = Join-Path $staging $exeName
 if (-not (Test-Path -LiteralPath $exe)) { throw "The publish did not produce $exeName." }
@@ -97,8 +106,18 @@ $shortcut = $shell.CreateShortcut($lnk)
 $shortcut.TargetPath = $target
 $shortcut.WorkingDirectory = $release
 $shortcut.IconLocation = "$target,0"
-$shortcut.Description = "Sloppy Animatsu $version"
+$shortcut.Description = "Sloppy Animatsu $version (developer release)"
 $shortcut.Save()
+
+# The shortcut was called "Sloppy Animatsu.lnk" before; remove that one when it points here, so it
+# no longer hides the installed build's shortcut of the same name.
+$oldLnk = Join-Path $desktop 'Sloppy Animatsu.lnk'
+if ($oldLnk -ne $lnk -and (Test-Path -LiteralPath $oldLnk)) {
+    $oldTarget = $shell.CreateShortcut($oldLnk).TargetPath
+    if ($oldTarget -and $oldTarget.StartsWith($release, [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $oldLnk -Force
+    }
+}
 
 # Explorer caches icons by path; ask it to refresh so the shortcut and taskbar show the current app.ico.
 $ie4 = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'

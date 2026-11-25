@@ -106,11 +106,13 @@ public class PreferencesSessionTests
         var preferences = Preferences.Load(path);
         var entries = PreferenceCatalogue.For(preferences);
 
-        // No page is lost and none is listed twice.
+        // No page is lost and none is listed twice; only the hidden pages (data protection) are left out.
         var listed = entries.SelectMany(entry => entry.Classes).ToList();
-        Assert.Equal(preferences.Pages.Count, listed.Count);
+        var shown = preferences.Pages.Where(page => !PreferenceCatalogue.IsHidden(page.ClassName)).ToList();
+        Assert.Equal(shown.Count, listed.Count);
         Assert.Equal(listed.Distinct().Count(), listed.Count);
-        Assert.All(preferences.Pages, page => Assert.Contains(page.ClassName, listed));
+        Assert.All(shown, page => Assert.Contains(page.ClassName, listed));
+        Assert.DoesNotContain("CDataProtectionPreferences", listed);
 
         // The curated rows keep the order at the top of the list; a page the catalogue does
         // not know is appended rather than dropping its values from the dialog.
@@ -266,6 +268,119 @@ public class PreferencesSessionTests
             Assert.False(session.SavedOnClose);
             Assert.Contains(numeric.Path, session.Status);
             Assert.Equal(before, File.ReadAllBytes(copy));
+        }
+        finally
+        {
+            File.Delete(copy);
+        }
+    }
+
+    [Fact]
+    public void Edit_WritesAtOnceAndUndoesAndRedoes()
+    {
+        if (TestFiles.Preferences is not { } path) return;
+        string copy = TempFile("prefs-live");
+        try
+        {
+            File.Copy(path, copy);
+            var session = new PreferencesSession(Preferences.Load(copy));
+            int spinner = session.IndexOf("CSpinnerPreferences");
+            var row = Assert.Single(session.Rows(spinner).Where(r => r.Member == "RotateStep"));
+            float current = (float)row.Field!.Value!;
+            string Text(float value) => value.ToString(CultureInfo.InvariantCulture);
+
+            // Each applied value is saved at once and is its own undo step.
+            Assert.NotNull(session.Edit(row, Text(current + 1f)));
+            Assert.NotNull(session.Edit(row, Text(current + 2f)));
+            Assert.Equal(current + 2f, Preferences.Load(copy).Get("CSpinnerPreferences", "RotateStep"));
+            // A value that does not parse writes nothing and says why.
+            Assert.Null(session.Edit(row, "not a number"));
+            Assert.NotEqual("", session.Status);
+            Assert.Equal(current + 2f, row.Field.Value);
+
+            Assert.True(session.CanUndo);
+            Assert.NotNull(session.Undo());
+            Assert.Equal(current + 1f, row.Field.Value);
+            Assert.NotNull(session.Undo());
+            Assert.False(session.CanUndo);
+            Assert.Equal(current, row.Field.Value);
+            Assert.Equal(current, Preferences.Load(copy).Get("CSpinnerPreferences", "RotateStep"));
+
+            Assert.NotNull(session.Redo());
+            Assert.NotNull(session.Redo());
+            Assert.Equal(current + 2f, Preferences.Load(copy).Get("CSpinnerPreferences", "RotateStep"));
+            // A new edit drops the redo branch.
+            Assert.NotNull(session.Undo());
+            Assert.NotNull(session.Edit(row, Text(current + 5f)));
+            Assert.False(session.CanRedo);
+        }
+        finally
+        {
+            File.Delete(copy);
+        }
+    }
+
+    [Fact]
+    public void RestoreDefaults_IsOneUndoableStepForThePage()
+    {
+        if (TestFiles.Preferences is not { } path) return;
+        string copy = TempFile("prefs-defaults");
+        try
+        {
+            File.Copy(path, copy);
+            var session = new PreferencesSession(Preferences.Load(copy));
+            int spinner = session.IndexOf("CSpinnerPreferences");
+            var row = Assert.Single(session.Rows(spinner).Where(r => r.Member == "RotateStep"));
+            object? defaultValue = Preferences.Defaults().Get("CSpinnerPreferences", "RotateStep");
+            Assert.NotNull(defaultValue);
+            float edited = (float)defaultValue! + 7f;
+            Assert.NotNull(session.Edit(row, edited.ToString(CultureInfo.InvariantCulture)));
+
+            var step = session.RestoreDefaults(spinner);
+            Assert.NotNull(step);
+            Assert.Equal(defaultValue, row.Field!.Value);
+            Assert.Equal(defaultValue, Preferences.Load(copy).Get("CSpinnerPreferences", "RotateStep"));
+            // Every changed row is in that one step; a second restore has nothing to do.
+            Assert.Null(session.RestoreDefaults(spinner));
+
+            Assert.Same(step, session.Undo());
+            Assert.Equal(edited, row.Field.Value);
+            Assert.Same(step, session.Redo());
+            Assert.Equal(defaultValue, row.Field.Value);
+        }
+        finally
+        {
+            File.Delete(copy);
+        }
+    }
+
+    [Fact]
+    public void History_OutlivesTheSessionForTheSameFileOnly()
+    {
+        if (TestFiles.Preferences is not { } path) return;
+        string copy = TempFile("prefs-history");
+        try
+        {
+            File.Copy(path, copy);
+            var preferences = Preferences.Load(copy);
+            var history = new PreferenceHistory();
+            var first = new PreferencesSession(preferences, history: history);
+            int spinner = first.IndexOf("CSpinnerPreferences");
+            var row = Assert.Single(first.Rows(spinner).Where(r => r.Member == "RotateStep"));
+            float current = (float)row.Field!.Value!;
+            Assert.NotNull(first.Edit(row, (current + 4f).ToString(CultureInfo.InvariantCulture)));
+
+            // Closing the dialog and opening it again: the step is still there to undo.
+            var second = new PreferencesSession(preferences, history: history);
+            Assert.True(second.CanUndo);
+            Assert.NotNull(second.Undo());
+            Assert.Equal(current, preferences.Get("CSpinnerPreferences", "RotateStep"));
+            Assert.Equal(1, history.RedoCount);
+
+            // Another preferences document does not inherit it.
+            var other = new PreferencesSession(Preferences.Load(copy), history: history);
+            Assert.False(other.CanUndo);
+            Assert.False(other.CanRedo);
         }
         finally
         {

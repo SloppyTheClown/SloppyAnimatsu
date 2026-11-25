@@ -64,6 +64,22 @@ internal static class MemoryLog
         }
     }
 
+    /// <summary>
+    /// Writes one timing line (no collection, so it costs nothing measurable): where the time of
+    /// a long operation such as opening a scene goes.
+    /// </summary>
+    public static void Step(string what)
+    {
+        if (FilePath == null) return;
+        try
+        {
+            File.AppendAllText(FilePath, FormattableString.Invariant($"# {Clock.Elapsed.TotalSeconds:F2}s step {what}\n"));
+        }
+        catch (IOException)
+        {
+        }
+    }
+
     private static void Write()
     {
         try

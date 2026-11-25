@@ -301,6 +301,9 @@ public abstract class AktFieldContainer
 {
     private static readonly AktMemberInfo[] NoMembers = Array.Empty<AktMemberInfo>();
     private static readonly object?[] NoValues = Array.Empty<object?>();
+    // Marks a container whose values live in a packed list (AktPackedKeys.cs); a distinct array,
+    // so it is never confused with NoValues.
+    private static readonly object?[] PackedValues = new object?[0];
 
     /// <summary>Class name (objects) or struct name (structs; the concrete type for polymorphic values).</summary>
     public string TypeName { get; set; }
@@ -329,13 +332,67 @@ public abstract class AktFieldContainer
         _count = layout.Length;
     }
 
+    /// <summary>A container whose values are read and written through <see cref="PackedGet"/>/<see cref="PackedSet"/>.</summary>
+    private protected AktFieldContainer(string typeName, AktMemberInfo[] layout, bool packed)
+    {
+        TypeName = typeName;
+        _members = layout;
+        _values = PackedValues;
+        _count = layout.Length;
+    }
+
+    /// <summary>True while the values live in a packed list.</summary>
+    internal bool HoldsPackedValues => ReferenceEquals(_values, PackedValues);
+
+    private protected virtual object? PackedGet(int index) => throw new InvalidOperationException("Not a packed container.");
+
+    private protected virtual void PackedSet(int index, object? value) => throw new InvalidOperationException("Not a packed container.");
+
+    /// <summary>Gives a packed container values of its own (before a structural change).</summary>
+    private protected virtual void Unpack() => throw new InvalidOperationException("Not a packed container.");
+
+    /// <summary>Makes <paramref name="values"/> (one per member) this container's own values.</summary>
+    internal void TakeValues(object?[] values)
+    {
+        if (values.Length != _count) throw new ArgumentException("One value per member is needed.", nameof(values));
+        _values = values;
+        _ownsMembers = false;
+    }
+
+    /// <summary>Drops its own values and reads through the packed list again, over <paramref name="layout"/>.</summary>
+    internal void ReturnToPacked(AktMemberInfo[] layout)
+    {
+        _members = layout;
+        _values = PackedValues;
+        _count = layout.Length;
+        _ownsMembers = false;
+    }
+
+    private void EnsureUnpacked()
+    {
+        if (!HoldsPackedValues) return;
+        Unpack();
+        if (HoldsPackedValues) throw new InvalidOperationException("A packed container could not be unpacked.");
+    }
+
     /// <summary>The fields as a list of views; prefer the indexed accessors below on hot paths.</summary>
     public AktFieldList Fields => new(this);
 
     public int FieldCount => _count;
     public AktMemberInfo MemberAt(int index) => _members[index];
-    public object? ValueAt(int index) => _values[index];
-    public void SetValueAt(int index, object? value) => _values[index] = value;
+    public object? ValueAt(int index)
+    {
+        if (!ReferenceEquals(_values, PackedValues)) return _values[index];
+        if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+        return PackedGet(index);
+    }
+
+    public void SetValueAt(int index, object? value)
+    {
+        if (!ReferenceEquals(_values, PackedValues)) { _values[index] = value; return; }
+        if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+        PackedSet(index, value);
+    }
 
     /// <summary>The members, shared; callers must not change the array.</summary>
     internal AktMemberInfo[] SharedLayout()
@@ -388,20 +445,20 @@ public abstract class AktFieldContainer
         get
         {
             int i = IndexOf(name);
-            return i < 0 ? null : _values[i];
+            return i < 0 ? null : ValueAt(i);
         }
     }
 
     public T Get<T>(string name)
     {
         int i = IndexOf(name);
-        return i >= 0 && _values[i] is T v ? v : throw new KeyNotFoundException($"{TypeName} has no {typeof(T).Name} field '{name}'.");
+        return i >= 0 && ValueAt(i) is T v ? v : throw new KeyNotFoundException($"{TypeName} has no {typeof(T).Name} field '{name}'.");
     }
 
     public T GetOr<T>(string name, T fallback)
     {
         int i = IndexOf(name);
-        return i >= 0 && _values[i] is T v ? v : fallback;
+        return i >= 0 && ValueAt(i) is T v ? v : fallback;
     }
 
     /// <summary>Replaces the value of an existing member (the value must use the representation listed on <see cref="AktField"/>).</summary>
@@ -409,13 +466,14 @@ public abstract class AktFieldContainer
     {
         int i = IndexOf(name);
         if (i < 0) throw new KeyNotFoundException($"{TypeName} has no field '{name}'.");
-        _values[i] = value;
+        SetValueAt(i, value);
     }
 
     // ---- structural changes (copy-on-write of the shared declarations) -------------------
 
     private void OwnMembers(int capacity)
     {
+        EnsureUnpacked();
         // Owned arrays keep _values.Length == _members.Length.
         if (_ownsMembers && _members.Length >= capacity) return;
         int size = capacity <= _count ? _count : Math.Max(capacity, Math.Max(4, _count * 2));
@@ -451,7 +509,7 @@ public abstract class AktFieldContainer
             OwnMembers(_count);
             _members[index] = info;
         }
-        _values[index] = value;
+        SetValueAt(index, value);
     }
 
     internal void RemoveFieldAt(int index)
@@ -469,6 +527,7 @@ public abstract class AktFieldContainer
 
     internal void ClearFields()
     {
+        EnsureUnpacked();
         _members = NoMembers;
         _values = NoValues;
         _count = 0;
@@ -478,6 +537,7 @@ public abstract class AktFieldContainer
     /// <summary>Replaces all members with <paramref name="layout"/> (shared) and <paramref name="values"/> (taken over).</summary>
     internal void ResetFields(AktMemberInfo[] layout, object?[] values)
     {
+        EnsureUnpacked();
         _members = layout;
         _values = values;
         _count = layout.Length;
@@ -490,7 +550,7 @@ public abstract class AktFieldContainer
         var layout = SharedLayout();
         var values = new object?[_count];
         for (int i = 0; i < _count; i++)
-            values[i] = deep ? AktStruct.CopyValue(_values[i], shareLargeArrays) : _values[i];
+            values[i] = deep ? AktStruct.CopyValue(ValueAt(i), shareLargeArrays) : ValueAt(i);
         return (layout, values);
     }
 }
@@ -541,9 +601,12 @@ public sealed class AktMap
 }
 
 /// <summary>A struct value (or a polymorphic value, whose <see cref="AktFieldContainer.TypeName"/> is the concrete type).</summary>
-public sealed class AktStruct : AktFieldContainer
+public class AktStruct : AktFieldContainer
 {
     public AktStruct(string typeName) : base(typeName) { }
+
+    /// <summary>A view of an element of a packed list (AktPackedKeys.cs).</summary>
+    private protected AktStruct(string typeName, AktMemberInfo[] layout, bool packed) : base(typeName, layout, packed) { }
 
     /// <summary>A struct over a shared <paramref name="layout"/> (the reader builds values this way).</summary>
     public AktStruct(string typeName, AktMemberInfo[] layout, object?[] values) : base(typeName, layout, values) { }
@@ -595,6 +658,7 @@ public sealed class AktStruct : AktFieldContainer
                 return copy;
             }
             case AktMap map: return CopyMap(map, shareLargeArrays);
+            case AktPackedList packed: return packed.CloneList(shareLargeArrays);
             case Array array: return shareLargeArrays && array.Length >= LargeArray ? array : array.Clone();
             default: return value;
         }
@@ -667,26 +731,37 @@ public sealed class AktObject : AktFieldContainer
     /// A deep copy of this object and its sub-tree, not attached to any parent. References to
     /// objects inside the sub-tree point at their copies; references outside are kept.
     /// </summary>
-    public AktObject CloneHierarchy()
+    public AktObject CloneHierarchy() => CloneHierarchies([this], out _)[0];
+
+    /// <summary>
+    /// Deep copies of several sub-trees made together, none attached to a parent: a reference from
+    /// one copied sub-tree into another points at the other's copy (a character and the meshes bound
+    /// to it, which sit elsewhere in the tree). References outside all of them are kept.
+    /// <paramref name="map"/> gives each original node's copy.
+    /// </summary>
+    public static IReadOnlyList<AktObject> CloneHierarchies(IReadOnlyList<AktObject> roots,
+        out IReadOnlyDictionary<AktObject, AktObject> map)
     {
-        var map = new Dictionary<AktObject, AktObject>(ReferenceEqualityComparer.Instance);
+        var copies = new Dictionary<AktObject, AktObject>(ReferenceEqualityComparer.Instance);
         AktObject CopyNode(AktObject o)
         {
             var (layout, values) = o.CopyFields(deep: true, shareLargeArrays: false);
             var copy = new AktObject(o.TypeName, layout, values);
-            map[o] = copy;
+            copies[o] = copy;
             foreach (var c in o.Children) copy.AddChild(CopyNode(c));
             return copy;
         }
-        var root = CopyNode(this);
-        foreach (var copy in root.PreOrder())
-            for (int i = 0; i < copy.FieldCount; i++)
-                Remap(copy.ValueAt(i), map);
-        return root;
+        var result = roots.Select(CopyNode).ToList();
+        foreach (var root in result)
+            foreach (var copy in root.PreOrder())
+                for (int i = 0; i < copy.FieldCount; i++)
+                    Remap(copy.ValueAt(i), copies);
+        map = copies;
+        return result;
     }
 
     /// <summary>Points every reference in <paramref name="value"/> at its copy, when it has one.</summary>
-    internal static void Remap(object? value, Dictionary<AktObject, AktObject> map)
+    internal static void Remap(object? value, IReadOnlyDictionary<AktObject, AktObject> map)
     {
         switch (value)
         {
@@ -701,6 +776,14 @@ public sealed class AktObject : AktFieldContainer
                 break;
             case List<object?> list:
                 foreach (var v in list) Remap(v, map);
+                break;
+            case AktMrsKeyColumn { IsPacked: true } keys:
+                keys.MapReferences((t, raw) => t != null && map.TryGetValue(t, out var to) ? (to, raw) : (t, raw));
+                break;
+            case AktPackedList { IsPacked: true }:
+                break; // tangent modes hold no references
+            case AktPackedList packed:
+                foreach (var v in packed) Remap(v, map);
                 break;
             case object?[] tuple:
                 foreach (var v in tuple) Remap(v, map);
@@ -736,14 +819,19 @@ public sealed class AktObject : AktFieldContainer
 /// A reference to another object. Resolved to <see cref="Target"/> after loading; the writer
 /// renumbers from the target, so references survive tree edits.
 /// </summary>
-public sealed class AktReference
+public class AktReference
 {
-    public AktObject? Target { get; set; }
-    /// <summary>The index read from the file (-1 = null). Used only when <see cref="Target"/> is unresolved.</summary>
-    public int RawIndex { get; set; }
+    private AktObject? _target;
+    private int _rawIndex = -1;
 
-    public AktReference(AktObject? target) { Target = target; RawIndex = -1; }
-    public AktReference(int rawIndex) { RawIndex = rawIndex; }
+    // Virtual so that a reference inside a packed key list writes through to the list.
+    public virtual AktObject? Target { get => _target; set => _target = value; }
+    /// <summary>The index read from the file (-1 = null). Used only when <see cref="Target"/> is unresolved.</summary>
+    public virtual int RawIndex { get => _rawIndex; set => _rawIndex = value; }
+
+    public AktReference(AktObject? target) { _target = target; }
+    public AktReference(int rawIndex) { _rawIndex = rawIndex; }
+    private protected AktReference() { }
 
     public bool IsNull => Target == null && RawIndex < 0;
 

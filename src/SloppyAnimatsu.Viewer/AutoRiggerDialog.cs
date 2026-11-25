@@ -282,11 +282,11 @@ public sealed class AutoRiggerDialog : Window
             // The drag list only holds the labels of the configured fingers (5 + F of them),
             // so a finger row past the count is not offered at all; the points a trim dropped are
             // therefore not placeable again until the count grows.
-            button.IsEnabled = _session.Required.Contains(point);
+            DisabledHint.SetEnabled(button, _session.Required.Contains(point), "a finger count that includes this point");
             button.Opacity = button.IsEnabled ? 1 : 0.6;
         }
 
-        _generate.IsEnabled = _session.CanBuild;
+        DisabledHint.SetEnabledBecause(_generate, _session.CanBuild, _session.Refusal);
         string meshes = _session.Meshes.Count == 1 ? "1 mesh" : $"{_session.Meshes.Count} meshes";
         _state.Text = _session.Refusal is { } refusal
             ? refusal

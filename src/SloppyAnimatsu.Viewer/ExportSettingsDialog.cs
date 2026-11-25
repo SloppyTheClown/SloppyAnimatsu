@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -27,6 +28,9 @@ public sealed class ExportSettingsDialog : Window
     private readonly List<CheckBox> _toggles = [];
     private readonly ComboBox _scope;
     private readonly TextBox _separator;
+    private readonly TextBox _scale;
+
+    private static string FormatScale(float factor) => factor.ToString("0.######", CultureInfo.InvariantCulture);
     private readonly TextBlock _summary;
     private readonly TextBlock _warnings;
     private readonly Action<FbxExportSettings>? _changed;
@@ -89,6 +93,25 @@ public sealed class ExportSettingsDialog : Window
                 toggles.Children.Add(box);
         }
 
+        _scale = new TextBox { Width = 72, VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(4, 1) };
+        ToolTip.SetTip(_scale,
+            "Multiplies the size of everything exported (positions, animation translations, mesh vertices); 1 keeps the scene's own size. The scene itself is not changed.");
+        _scale.TextChanged += (_, _) =>
+        {
+            if (_syncing) return;
+            bool valid = float.TryParse((_scale.Text ?? "").Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float factor)
+                && FbxExportSettings.IsValidScaleFactor(factor);
+            _scale.Foreground = valid ? null : WarningForeground;
+            if (valid && factor != _settings.ScaleFactor) Change(_settings with { ScaleFactor = factor });
+        };
+        _scale.LostFocus += (_, _) => { _syncing = true; _scale.Text = FormatScale(_settings.ScaleFactor); _scale.ClearValue(ForegroundProperty); _syncing = false; };
+        var scaleRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children = { new TextBlock { Text = "Scale factor", VerticalAlignment = VerticalAlignment.Center }, _scale },
+        };
+
         var export = new Button { Content = "Export…" };
         var cancel = new Button { Content = "Cancel" };
         ToolTip.SetTip(export, "Choose where to write the file(s) and export with these settings. The settings are kept for next time.");
@@ -123,6 +146,7 @@ public sealed class ExportSettingsDialog : Window
                 presetRow,
                 _scope,
                 toggles,
+                scaleRow,
                 _warnings,
                 legend,
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { export, cancel } },
@@ -137,6 +161,7 @@ public sealed class ExportSettingsDialog : Window
             stops.Add((DialogStop.ExportOption, _toggles[i]));
             if (i == FbxExportSettings.FolderPathOptionIndex) stops.Add((DialogStop.ExportSeparator, _separator));
         }
+        stops.Add((DialogStop.ExportScale, _scale));
         stops.Add((DialogStop.ExportRun, export));
         stops.Add((DialogStop.ExportCancel, cancel));
         new DialogChrome(this, DialogId.ExportSettings).Bind(stops.ToArray());
@@ -203,7 +228,8 @@ public sealed class ExportSettingsDialog : Window
         for (int i = 0; i < _toggles.Count; i++)
             _toggles[i].IsChecked = FbxExportSettings.Options[i].Get(_settings);
         if (_separator.Text != _settings.FolderSeparator) _separator.Text = _settings.FolderSeparator;
-        _separator.IsEnabled = _settings.FolderPathInName;
+        DisabledHint.SetEnabled(_separator, _settings.FolderPathInName, "\"Folder path in file names\" ticked");
+        if (!_scale.IsFocused) _scale.Text = FormatScale(_settings.ScaleFactor);
         _summary.Text = _describe?.Invoke(_settings) ?? "";
         var warnings = _settings.Warnings();
         _warnings.Text = string.Join("\n", warnings.Select(w => "⚠ " + w));

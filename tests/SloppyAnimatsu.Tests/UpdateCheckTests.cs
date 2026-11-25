@@ -95,6 +95,23 @@ public class UpdateCheckTests
         Assert.Equal(expected, UpdateCheck.IsBuildTree(folder));
 
     [Fact]
+    public void A_marked_developer_release_is_never_replaced()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), "sloppyanimatsu-devmarker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            Assert.False(UpdateCheck.IsDevelopmentFolder(folder));
+            File.WriteAllText(Path.Combine(folder, UpdateCheck.DevelopmentBuildMarker), "dev");
+            Assert.True(UpdateCheck.IsDevelopmentFolder(folder));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ReadsTheChecksumList()
     {
         const string sums = "ABCDEF  SloppyAnimatsu-0.4.0-alpha-win-x64.zip\r\n123456 *SloppyAnimatsu-0.4.0-alpha-linux-x64.tar.gz\n";

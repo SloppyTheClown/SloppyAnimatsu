@@ -53,8 +53,8 @@ public sealed class WelcomeDialog : Window
         {
             Content = $"Skip {Welcome.Heading.ToLowerInvariant()} window at startup",
             IsChecked = Welcome.IsSkipped(preferences),
-            IsEnabled = preferences != null,
         };
+        DisabledHint.SetEnabled(skip, preferences != null, "a preferences file that could be read");
         skip.IsCheckedChanged += (_, _) => Remember(skip.IsChecked == true);
         controls.Add((DialogStop.WelcomeSkip, skip));
 

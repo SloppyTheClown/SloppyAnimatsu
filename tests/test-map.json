@@ -44,6 +44,9 @@
         "AktImportTests",
         "BlendshapeTests",
         "MeshLayerTests",
+        "PackedKeysTests",
+        "PackedIkKeysTests",
+        "PackedMeshArraysTests",
         "SceneModelTests"
       ]
     },
@@ -205,9 +208,11 @@
         "src/SloppyAnimatsu.Core/Model/RestPosePrompt.cs",
         "src/SloppyAnimatsu.Core/Model/SpaceSwitchChoice.cs",
         "src/SloppyAnimatsu.Core/Model/TextPrompt.cs",
-        "src/SloppyAnimatsu.Core/Model/DialogLayout.cs"
+        "src/SloppyAnimatsu.Core/Model/DialogLayout.cs",
+        "src/SloppyAnimatsu.Core/Model/Ghosts.cs"
       ],
       "tests": [
+        "GhostsTests",
         "PreferencesSessionTests",
         "PreferencePageLayoutTests",
         "ShortcutSessionTests",
@@ -255,6 +260,18 @@
         "MeshLayerTests",
         "AknmTests",
         "SceneModelTests"
+      ]
+    },
+    {
+      "name": "scene rescale (normalize scale, export scale factor)",
+      "sources": [
+        "src/SloppyAnimatsu.Core/Model/SceneRescale.cs",
+        "src/SloppyAnimatsu.Core/Model/SceneReframe.cs"
+      ],
+      "tests": [
+        "SceneRescaleTests",
+        "SceneReframeTests",
+        "FbxExportTests"
       ]
     },
     {

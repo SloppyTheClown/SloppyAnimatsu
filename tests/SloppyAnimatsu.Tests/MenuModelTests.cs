@@ -28,7 +28,7 @@ public class MenuModelTests
         Assert.Equal(new[] { "_File", "_Edit", "_Plugins", "_Help" }, Headers(bar));
         var menu = MenuModel.Build(new MenuState());
         Assert.Equal(
-            new[] { "_File", "_Edit", "_Plugins", "_Help", "_Rig", "_Keys", "_Animation", "_Stack", "_Context", "_View" },
+            new[] { "_File", "_Edit", "_Plugins", "_Help", "_Rig", "S_kin", "_Keys", "_Animation", "_Stack", "_Context", "_View" },
             Headers(menu));
         Assert.All(menu, entry => Assert.Equal(MenuEntryKind.Submenu, entry.Kind));
         Assert.All(menu, entry => Assert.Null(entry.Command));
@@ -162,26 +162,34 @@ public class MenuModelTests
         var none = Menu(new MenuState { Context = InterfaceContext.Rigging }, "_Rig");
         foreach (string header in new[]
                  {
-                     "_New joint…", "_Insert joint above…", "_Delete selected joints", "_Orient selected joints",
+                     "_Create joint…", "_Insert joint…", "_Delete selected joints", "_Orient selected joints",
                      "_Parent selected joints to the last selected", "_Unparent selected joints",
-                     "Add _IK (two selected joints)", "Add _reverse foot (two selected joints)", "_Bind skin",
-                     "Unbind _skin", "Snap _LTM from the rig pose",
+                     "Add _IK (two selected joints)", "Add _reverse foot (two selected joints)",
+                     "_Normalize scale…", "Normalize _translation…", "Normalize r_otation…",
                  })
             Assert.False(Row(none, header).Enabled, header);
+        var noneSkin = Menu(new MenuState { Context = InterfaceContext.Rigging }, "S_kin");
+        Assert.False(Row(noneSkin, "_Bind skin").Enabled);
+        Assert.False(Row(noneSkin, "_Unbind skin").Enabled);
+        // Skinning and the rig-pose snapshot are not Rig rows any more.
+        Assert.DoesNotContain(Menu(new MenuState { Context = InterfaceContext.Rigging }, "_Rig").Children,
+            entry => entry.Command is MenuCommand.BindSkin or MenuCommand.UnbindSkin);
 
         // The Rigging context with the rest pose shown: the bind commands run, nothing that needs a joint.
         var rigging = new MenuState { HasScene = true, Context = InterfaceContext.Rigging };
         var rig = Menu(rigging, "_Rig");
-        Assert.True(Row(rig, "_New joint…").Enabled);
-        Assert.True(Row(rig, "_Bind skin").Enabled);
-        Assert.True(Row(rig, "Unbind _skin").Enabled);
-        Assert.True(Row(rig, "Snap _LTM from the rig pose").Enabled);
+        var skin = Menu(rigging, "S_kin");
+        Assert.True(Row(rig, "_Create joint…").Enabled);
+        Assert.True(Row(rig, "Normalize _translation…").Enabled);
+        Assert.True(Row(rig, "Normalize r_otation…").Enabled);
+        Assert.True(Row(skin, "_Bind skin").Enabled);
+        Assert.True(Row(skin, "_Unbind skin").Enabled);
         // A CHAR BANK pose row current (Bind/Build/Ref Pose): Bind Skin needs Paint & Check
         // Unbind stays available.
-        var poseRow = Menu(rigging with { PoseRowCurrent = true }, "_Rig");
+        var poseRow = Menu(rigging with { PoseRowCurrent = true }, "S_kin");
         Assert.False(Row(poseRow, "_Bind skin").Enabled);
-        Assert.True(Row(poseRow, "Unbind _skin").Enabled);
-        Assert.False(Row(rig, "_Insert joint above…").Enabled);
+        Assert.True(Row(poseRow, "_Unbind skin").Enabled);
+        Assert.False(Row(rig, "_Insert joint…").Enabled);
         Assert.False(Row(rig, "_Delete selected joints").Enabled);
         Assert.False(Row(rig, "Add _IK (two selected joints)").Enabled);
 
@@ -192,14 +200,14 @@ public class MenuModelTests
         Assert.True(Row(pairMenu, "Add _IK (two selected joints)").Enabled);
         Assert.True(Row(pairMenu, "Add _reverse foot (two selected joints)").Enabled);
         Assert.True(Row(pairMenu, "_Delete selected joints").Enabled);
-        Assert.True(Row(pairMenu, "_Insert joint above…").Enabled);
+        Assert.True(Row(pairMenu, "_Insert joint…").Enabled);
 
         // A CHAR BANK row other than the Bind/Build Pose (the transform modes 2 and 4): the
         // joint tools are off, Delete and the animated camera stay
         var blocked = Menu(pair with { JointEditBlocked = true }, "_Rig");
         foreach (string header in new[]
                  {
-                     "_New joint…", "_Insert joint above…", "_Orient selected joints",
+                     "_Create joint…", "_Insert joint…", "_Orient selected joints",
                      "_Parent selected joints to the last selected", "_Unparent selected joints",
                      "Add _IK (two selected joints)", "Add _reverse foot (two selected joints)",
                  })
@@ -214,7 +222,7 @@ public class MenuModelTests
         // A selected mesh is not a joint: nothing that needs one runs.
         var mesh = rigging with { JointsSelected = 0, SelectionIsJoint = false, SelectionCount = 1 };
         var meshMenu = Menu(mesh, "_Rig");
-        Assert.False(Row(meshMenu, "_Insert joint above…").Enabled);
+        Assert.False(Row(meshMenu, "_Insert joint…").Enabled);
         Assert.False(Row(meshMenu, "_Parent selected joints to the last selected").Enabled);
 
         // With an animation shown, the rest pose is left and every rest-pose command is off; the
@@ -234,7 +242,7 @@ public class MenuModelTests
             JointsSelected = 2,
             SelectionIsJoint = true,
         };
-        Assert.False(Row(Menu(context, "_Rig"), "_Bind skin").Enabled);
+        Assert.False(Row(Menu(context, "S_kin"), "_Bind skin").Enabled);
     }
 
     [Fact]
@@ -446,7 +454,7 @@ public class MenuModelTests
                 AlignOnCreate: false),
         };
         var axes = Menu(state, "_Rig").Children.Single(entry => entry.Header == "Joint _axes");
-        Assert.Equal(new[] { "Aim axis", "Up axis", "", "Align on create (a chain tip)" },
+        Assert.Equal(new[] { "Aim axis", "2nd axis", "", "Auto-orient on creation" },
             Headers(axes.Children));
 
         var aim = axes.Children[0];
@@ -470,12 +478,12 @@ public class MenuModelTests
         Assert.Equal(MenuCommand.JointAlignOnCreate, axes.Children[3].Command);
         Assert.True(axes.Children[3].Checkable);
 
-        // The shipped alignment ticks +Y (aim) and +Z (up), and "align on create".
+        // The default alignment ticks +Z (aim) and +Y (up), and "align on create".
         var defaults = Menu(new MenuState { HasScene = true, Context = InterfaceContext.Rigging }, "_Rig");
         var defaultAxes = defaults.Children.Single(entry => entry.Header == "Joint _axes");
-        Assert.Equal(new[] { "+Y" },
-            defaultAxes.Children[0].Children.Where(entry => entry.Checked).Select(entry => entry.Header));
         Assert.Equal(new[] { "+Z" },
+            defaultAxes.Children[0].Children.Where(entry => entry.Checked).Select(entry => entry.Header));
+        Assert.Equal(new[] { "+Y" },
             defaultAxes.Children[1].Children.Where(entry => entry.Checked).Select(entry => entry.Header));
         Assert.True(defaultAxes.Children[3].Checked);
     }

@@ -1,8 +1,16 @@
 namespace SloppyAnimatsu.Core.Model;
 
-/// <summary>One text box of the preferences dialog: the member it edits and the text in it.</summary>
-public readonly record struct PreferenceEdit(PreferenceField Field, string? Text)
+/// <summary>
+/// One text box of the preferences dialog: the member it edits, the text in it, and the page row
+/// that drew it. With a row, the text is read the way the row draws it (a combo option's name, a
+/// "m 1.000" length, a flags bit's True/False); without one it is the member's own text.
+/// </summary>
+public readonly record struct PreferenceEdit(PreferenceField Field, string? Text, PreferenceRow? Row = null)
 {
+    /// <summary>Writes the text into the member through the row's conversion when there is a row.</summary>
+    public bool TryApply(out string? error) =>
+        Row is { } row ? row.TrySetFromText(Text, out error) : Field.TrySetFromString(Text ?? "", out error);
+
     /// <summary>An untouched text box, holding the member's current text.</summary>
     public static PreferenceEdit Of(PreferenceField field) => new(field, field.Format());
 }
@@ -34,9 +42,9 @@ public enum PreferencePageChange
 /// The preferences dialog's own code, moved out of the window so it can be tested without Avalonia
 /// It owns the three decisions the window
 /// used to make: which rows a page draws (the curated rows, <see cref="PreferenceLayout"/>), which
-/// of them a commit sends (<see cref="Changed"/>), and when a page's text boxes are written into the
-/// document - on a page switch, on Save, and on Cancel/Cancel-by-close, which puts the file back
-/// the way it was when the dialog opened.
+/// of them a commit sends (<see cref="Changed"/>), and when a value is written into the document.
+/// The dialog writes live: every row change goes through <see cref="Edit"/> (saved at once), a page's
+/// <see cref="RestoreDefaults"/> is one step, and <see cref="Undo"/>/<see cref="Redo"/> walk them back.
 /// </summary>
 public sealed class PreferencesSession
 {
@@ -62,9 +70,18 @@ public sealed class PreferencesSession
     /// The open scene, whose <c>CScene</c> values the scene-backed rows draw and write
     /// Null when no scene is open: those rows then fall back to the profile.
     /// </param>
-    public PreferencesSession(Preferences preferences, int? sceneFrameRate = null, Scene? scene = null)
+    /// <param name="history">
+    /// The undo history to continue, kept by the caller so it outlives one opening of the dialog;
+    /// null starts an empty one.
+    /// </param>
+    public PreferencesSession(Preferences preferences, int? sceneFrameRate = null, Scene? scene = null,
+        PreferenceHistory? history = null)
     {
         Preferences = preferences;
+        _sceneFrameRate = sceneFrameRate;
+        _scene = scene;
+        _history = history ?? new PreferenceHistory();
+        _history.Adopt(preferences, scene);
         // The left list is the catalogue's rows (the flat, alphabetical titles), not the file's
         // node order: one row can show two pages' members (Rig Atelier shows the skeleton and IK
         // pages), and a page the catalogue does not know keeps a row of its own.
@@ -135,7 +152,7 @@ public sealed class PreferencesSession
         var edits = new List<PreferenceEdit>();
         foreach (var (row, text) in shown)
             if (row.Editable && row.Field is { } field && text is not null && !row.IsUnchanged(text))
-                edits.Add(new PreferenceEdit(field, text));
+                edits.Add(new PreferenceEdit(field, text, row));
         return edits;
     }
 
@@ -144,7 +161,7 @@ public sealed class PreferencesSession
     {
         var errors = new List<string>();
         foreach (var editor in editors)
-            if (!editor.Field.TrySetFromString(editor.Text ?? "", out string? error))
+            if (!editor.TryApply(out string? error))
                 errors.Add(error!);
         return errors.Count == 0
             ? PreferenceCommit.Accepted
@@ -219,9 +236,194 @@ public sealed class PreferencesSession
         return false;
     }
 
-    /// <summary>Cancel (also the title bar's X): every value of the file returns to what it held when the dialog opened.</summary>
+    /// <summary>Every value of the file returns to what it held when the session opened (or was last saved).</summary>
     public void Restore()
     {
         foreach (var (field, text) in _originals) field.TrySetFromString(text, out _);
+    }
+
+    // ---- Live editing: every change is written at once, saved, and can be undone. ----
+
+    private readonly PreferenceHistory _history;
+    private List<PreferenceStep> _undo => _history.UndoSteps;
+    private List<PreferenceStep> _redo => _history.RedoSteps;
+    private readonly Scene? _scene;
+    private Preferences? _defaults;
+    private readonly int? _sceneFrameRate;
+
+    /// <summary>Whether there is a change to undo or redo.</summary>
+    public bool CanUndo => _undo.Count > 0;
+    public bool CanRedo => _redo.Count > 0;
+
+    /// <summary>What the next undo or redo would change, for the buttons' hover text.</summary>
+    public string? NextUndo => _undo.Count > 0 ? _undo[^1].Label : null;
+    public string? NextRedo => _redo.Count > 0 ? _redo[^1].Label : null;
+
+    /// <summary>
+    /// Writes one row's new text at once and saves the file, as one undo step. A value that does not
+    /// parse writes nothing and returns null with <see cref="Status"/> saying why. Returns the step
+    /// written (null when nothing changed or the text was refused).
+    /// </summary>
+    public PreferenceStep? Edit(PreferenceRow row, string? text)
+    {
+        if (!row.Editable || row.Field is not { } field || text is null || row.IsUnchanged(text)) return null;
+        string before = field.Format();
+        if (!row.TrySetFromText(text, out string? error))
+        {
+            Status = error ?? $"{row.Label}: not a value.";
+            return null;
+        }
+        string after = field.Format();
+        if (string.Equals(before, after, StringComparison.Ordinal)) return null;
+        var step = new PreferenceStep($"Set {row.Label}", Page,
+            [new PreferenceChange(field, before, after, row.IsSceneBacked)], row.IsSceneBacked ? _scene : null);
+        _undo.Add(step);
+        _redo.Clear();
+        Persist(step);
+        return step;
+    }
+
+    /// <summary>
+    /// Puts every row of <paramref name="pageIndex"/> back to its default value as one undoable step.
+    /// The remembered folders (<c>PreferredPaths</c>) are the user's, not settings, and are kept.
+    /// Returns the step, or null when the page already holds its defaults.
+    /// </summary>
+    public PreferenceStep? RestoreDefaults(int pageIndex)
+    {
+        if (pageIndex < 0 || pageIndex >= Entries.Count) return null;
+        var defaults = DefaultTexts(pageIndex);
+        var changes = new List<PreferenceChange>();
+        var errors = new List<string>();
+        foreach (var row in Rows(pageIndex))
+        {
+            if (!row.Editable || row.Field is not { } field || row.Member is not { } member) continue;
+            if (member.StartsWith("PreferredPaths.", StringComparison.Ordinal)) continue;
+            if (!defaults.TryGetValue((row.Label, member), out string? text) || row.IsUnchanged(text)) continue;
+            string before = field.Format();
+            if (!row.TrySetFromText(text, out string? error)) { errors.Add(error!); continue; }
+            string after = field.Format();
+            if (!string.Equals(before, after, StringComparison.Ordinal))
+                changes.Add(new PreferenceChange(field, before, after, row.IsSceneBacked));
+        }
+        Status = StatusText(errors);
+        if (changes.Count == 0) return null;
+        var step = new PreferenceStep($"Restore {Title(pageIndex)} defaults", pageIndex, changes,
+            changes.Any(change => change.SceneBacked) ? _scene : null);
+        _undo.Add(step);
+        _redo.Clear();
+        Persist(step);
+        return step;
+    }
+
+    /// <summary>Takes back the last change (it may be on another page: <see cref="Page"/> moves to it).</summary>
+    public PreferenceStep? Undo() => Move(_undo, _redo, undo: true);
+
+    /// <summary>Puts back the last undone change.</summary>
+    public PreferenceStep? Redo() => Move(_redo, _undo, undo: false);
+
+    private PreferenceStep? Move(List<PreferenceStep> from, List<PreferenceStep> to, bool undo)
+    {
+        if (from.Count == 0) return null;
+        var step = from[^1];
+        from.RemoveAt(from.Count - 1);
+        foreach (var change in step.Changes)
+            change.Field.TrySetFromString(undo ? change.Before : change.After, out _);
+        to.Add(step);
+        if (step.Page >= 0 && step.Page < Entries.Count) Page = step.Page;
+        Persist(step);
+        return step;
+    }
+
+    /// <summary>
+    /// Saves the file after a change of a profile value; a scene value is saved with the scene, so a
+    /// step of only scene values leaves the file alone (<see cref="PreferenceStep.TouchesScene"/>).
+    /// </summary>
+    private void Persist(PreferenceStep step)
+    {
+        if (step.TouchesScene) SceneEdited = true;
+        if (!step.Changes.Any(change => !change.SceneBacked))
+        {
+            Status = "";
+            return;
+        }
+        try
+        {
+            Preferences.Save();
+            Status = "";
+        }
+        catch (Exception e)
+        {
+            Status = "Could not save the preferences: " + e.Message;
+        }
+    }
+
+    /// <summary>The default text of each row of a page, keyed by (label, member), from <see cref="Preferences.Defaults"/>.</summary>
+    private Dictionary<(string, string), string> DefaultTexts(int pageIndex)
+    {
+        _defaults ??= Preferences.Defaults();
+        var texts = new Dictionary<(string, string), string>();
+        // Built without a scene, so a scene-backed row reads the profile default of the same member.
+        foreach (var row in PreferenceLayout.Build(Entries[pageIndex], _defaults.Pages, _sceneFrameRate))
+            if (row.Editable && row.Member is { } member) texts.TryAdd((row.Label, member), row.Text);
+        return texts;
+    }
+}
+
+/// <summary>One value an undoable preferences step changed, as its text before and after.</summary>
+public readonly record struct PreferenceChange(PreferenceField Field, string Before, string After, bool SceneBacked);
+
+/// <summary>
+/// One undoable change of the preferences dialog: a row edit, or a page's *Restore defaults*.
+/// <paramref name="Scene"/> is the scene its scene-backed values were written into.
+/// </summary>
+public sealed record PreferenceStep(string Label, int Page, IReadOnlyList<PreferenceChange> Changes, Scene? Scene = null)
+{
+    /// <summary>Whether the step changed a value the open scene holds, so the document is now dirty.</summary>
+    public bool TouchesScene => Changes.Any(change => change.SceneBacked);
+}
+
+/// <summary>
+/// The preferences dialog's undo and redo steps, kept by the main window so they outlive one opening
+/// of the dialog. They belong to one preferences document: a session on another document starts
+/// empty. Scene-backed values belong to the scene they were written into, so opening the dialog on
+/// another scene drops those values from the steps (and a step left with nothing is dropped).
+/// </summary>
+public sealed class PreferenceHistory
+{
+    internal List<PreferenceStep> UndoSteps { get; } = new();
+    internal List<PreferenceStep> RedoSteps { get; } = new();
+    private Preferences? _owner;
+
+    public int UndoCount => UndoSteps.Count;
+    public int RedoCount => RedoSteps.Count;
+
+    public void Clear()
+    {
+        UndoSteps.Clear();
+        RedoSteps.Clear();
+    }
+
+    internal void Adopt(Preferences preferences, Scene? scene)
+    {
+        if (!ReferenceEquals(_owner, preferences))
+        {
+            Clear();
+            _owner = preferences;
+            return;
+        }
+        Prune(UndoSteps, scene);
+        Prune(RedoSteps, scene);
+    }
+
+    private static void Prune(List<PreferenceStep> steps, Scene? scene)
+    {
+        for (int i = steps.Count - 1; i >= 0; i--)
+        {
+            var step = steps[i];
+            if (!step.TouchesScene || ReferenceEquals(step.Scene, scene)) continue;
+            var kept = step.Changes.Where(change => !change.SceneBacked).ToList();
+            if (kept.Count == 0) steps.RemoveAt(i);
+            else steps[i] = step with { Changes = kept, Scene = null };
+        }
     }
 }

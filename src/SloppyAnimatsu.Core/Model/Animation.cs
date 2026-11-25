@@ -189,9 +189,14 @@ public class AnimStack : SceneObject
 
     internal void PutKeyTime(int index, object? entry) => SceneValues.Items(Source, "TimeArray").Insert(index, entry);
 
-    internal static void Reorder(List<object?> list, IReadOnlyList<int> order)
+    internal static void Reorder(IList<object?> list, IReadOnlyList<int> order)
     {
         if (order.Count != list.Count) return;
+        if (list is AktPackedList packed)
+        {
+            packed.Permute(order);
+            return;
+        }
         var old = list.ToArray();
         for (int i = 0; i < order.Count; i++) list[i] = old[order[i]];
     }
@@ -224,7 +229,26 @@ public class AnimStack : SceneObject
 
     /// <summary>Bit 1 (0x2): enabled. Bit 3 (0x8): additive layer, else override. Others unknown.</summary>
     public uint Flags => Source.GetOr("Flags", 0u);
+    /// <summary>
+    /// View state kept with the stack but not an edit of the animation. Bit 0 (0x1): previous
+    /// ghosts shown; bit 1 (0x2): next ghosts shown. Others unknown.
+    /// </summary>
     public uint FlagsNoModify => Source.GetOr("FlagsNoModify", 0u);
+
+    /// <summary><see cref="FlagsNoModify"/> bit 0: the Stacker's previous ghosts are on for this stack.</summary>
+    public const uint PreviousGhostsFlag = 0x1;
+    /// <summary><see cref="FlagsNoModify"/> bit 1: the Stacker's next ghosts are on for this stack.</summary>
+    public const uint NextGhostsFlag = 0x2;
+
+    /// <summary>Sets or clears <paramref name="flag"/> in <see cref="FlagsNoModify"/>; returns whether it changed.</summary>
+    public bool SetNoModifyFlag(uint flag, bool on)
+    {
+        uint before = FlagsNoModify;
+        uint after = on ? before | flag : before & ~flag;
+        if (after == before) return false;
+        Source.Set("FlagsNoModify", after);
+        return true;
+    }
     /// <summary>UI colour, RGBA bytes.</summary>
     public byte[] Color => Source.GetOr<byte[]>("Color", [0, 0, 0, 0]);
     /// <summary>Layer weight (1 in all samples); see <see cref="PoseEvaluator"/>.</summary>
@@ -296,7 +320,50 @@ public class AnimTrack : SceneObject
     public Object3D? Target => Ref<Object3D>("Target");
 
     /// <summary>Whether this is a <c>CAnimTrackCamera</c> (its keys are <see cref="CameraKey"/>s).</summary>
-    public bool IsCameraTrack => Target is CameraAnimated || Keys.Any(k => k is CameraKey);
+    public bool IsCameraTrack => Target is CameraAnimated
+        || (PackedKeys("KeyList") is { } packed ? PackedHolds(packed, "CKeyCamera") : Keys.Any(k => k is CameraKey));
+
+    /// <summary>The packed key list in <paramref name="field"/>, or null.</summary>
+    private AktMrsKeyColumn? PackedKeys(string field) =>
+        SceneValues.Items(Source, field) is AktMrsKeyColumn { IsPacked: true } c ? c : null;
+
+    /// <summary>Whether a packed list's keys are of (a subclass of) <paramref name="keyStruct"/>; a packed list holds one type.</summary>
+    private static bool PackedHolds(AktMrsKeyColumn column, string keyStruct) =>
+        AktNames.PolymorphicChain(AktNames.Key(column.Shape.TypeName)).Contains(keyStruct);
+
+    /// <summary>Whether the value keys are a packed list of keys that are not camera keys (so they carry no FOV).</summary>
+    internal bool HasPackedNonCameraKeys => PackedKeys("KeyList") is { } c && !PackedHolds(c, "CKeyCamera");
+
+    /// <summary>Per value key: <c>CKeyIK.Flags</c>, 0 for other key types. A packed list is read without per-key objects.</summary>
+    internal uint[] ReadIKFlags()
+    {
+        if (PackedKeys("KeyList") is { } packed)
+        {
+            var result = new uint[packed.Count];
+            int at = PackedHolds(packed, "CKeyIK") ? packed.ScalarOffset("Flags", isUInt: true) : -1;
+            if (at >= 0)
+                for (int i = 0; i < result.Length; i++) result[i] = packed.UIntAt(i, at);
+            return result;
+        }
+        return Keys.Select(k => (k as IKKey)?.Flags ?? 0u).ToArray();
+    }
+
+    /// <summary>
+    /// Scalar float <paramref name="member"/> (e.g. <c>RollAngle</c>) of entry <paramref name="i"/>
+    /// of <paramref name="field"/>; 0 when the entry or the member is missing. A packed list is
+    /// read without per-key objects.
+    /// </summary>
+    internal float KeyScalar(string field, int i, string member)
+    {
+        var items = SceneValues.Items(Source, field);
+        if ((uint)i >= (uint)items.Count) return 0f;
+        if (items is AktMrsKeyColumn { IsPacked: true } packed)
+        {
+            int at = packed.ScalarOffset(member, isUInt: false);
+            return at >= 0 ? packed.ElementFloats(i)[at] : 0f;
+        }
+        return items[i] is AktStruct s ? s.GetOr(member, 0f) : 0f;
+    }
 
     /// <summary>Whether the track keys its target's FOV (channel 15, camera tracks only).</summary>
     public bool HasFov => (Channels & AnimChannels.Fov) != 0;
@@ -313,7 +380,9 @@ public class AnimTrack : SceneObject
 
     /// <summary>Per key, one mode per channel.</summary>
     public IReadOnlyList<TangentMode[]> TangentModes =>
-        SceneValues.Items(Source, "TangentInfoArray")
+        SceneValues.Items(Source, "TangentInfoArray") is AktTangentColumn { IsPacked: true } column
+            ? Enumerable.Range(0, column.Count).Select(i => Array.ConvertAll(column.ModesAt(i), m => new TangentMode(m))).ToArray()
+            : SceneValues.Items(Source, "TangentInfoArray")
             .Select(l => l is AktStruct list
                 ? SceneValues.Items(list, "TangentInfoChannels").Select(c => new TangentMode(((AktStruct)c!).Get<uint>("TangentMode"))).ToArray()
                 : [])
@@ -379,6 +448,66 @@ public class AnimTrack : SceneObject
 
     private IReadOnlyList<AnimKey?> KeyList(string field) =>
         SceneValues.Items(Source, field).Select(k => k is AktStruct s ? AnimKey.Wrap(Model, s) : null).ToArray();
+
+    /// <summary>
+    /// Per entry of <paramref name="field"/> (<c>KeyList</c>, <c>TInList</c>, <c>TOutList</c>): the
+    /// TRS of a transform key, or null. A packed list is read from its floats, without building
+    /// per-key objects (which a packed list would keep for as long as the scene lives).
+    /// </summary>
+    public Transform?[] ReadTransforms(string field)
+    {
+        if (TransformFloats.Of(SceneValues.Items(Source, field), allowIK: true) is { } packed)
+        {
+            var result = new Transform?[packed.Column.Count];
+            for (int i = 0; i < result.Length; i++) result[i] = packed.Layout.Read(packed.Column.ElementFloats(i));
+            return result;
+        }
+        return KeyList(field).Select(k => k is TransformKey t ? t.Value : (Transform?)null).ToArray();
+    }
+
+    /// <summary>Per value key: its space object (null = the target's default parent, or not a transform key).</summary>
+    public Object3D?[] ReadSpaces()
+    {
+        if (TransformFloats.Of(SceneValues.Items(Source, "KeyList"), allowIK: true) is { } packed)
+        {
+            var result = new Object3D?[packed.Column.Count];
+            for (int i = 0; i < result.Length; i++)
+                result[i] = packed.Column.RefTarget(i, "Space") is { } space ? Model.Wrap(space) as Object3D : null;
+            return result;
+        }
+        return Keys.Select(k => (k as TransformKey)?.Space).ToArray();
+    }
+
+    /// <summary>Whether the value keys are a packed list of plain transform keys (so no IK, camera or blendshape keys).</summary>
+    internal bool HasPackedTransformKeys => TransformFloats.Of(SceneValues.Items(Source, "KeyList")) != null;
+}
+
+/// <summary>Where a plain transform key's TRS floats sit inside an element of a packed key list.</summary>
+internal readonly record struct TransformFloats(int Tx, int Ty, int Tz, int Rotation, int Sx, int Sy, int Sz)
+{
+    /// <summary>
+    /// The packed list and its layout when <paramref name="items"/> is a packed list of plain
+    /// transform keys (with <paramref name="allowIK"/>, also IK and reverse-foot keys, whose
+    /// <c>Key</c> is read the same way); else null.
+    /// </summary>
+    internal static (AktMrsKeyColumn Column, TransformFloats Layout)? Of(IList<object?> items, bool allowIK = false)
+    {
+        if (items is not AktMrsKeyColumn { IsPacked: true } c || c.ElementTypeName is not { } type || c.ValueMemberName != "Key")
+            return null;
+        // The same classification as AnimKey.Wrap: only keys that wrap as a TransformKey without extra data.
+        var chain = AktNames.PolymorphicChain(AktNames.Key(type));
+        if (!chain.Contains("CKeyMRS") || (!allowIK && chain.Contains("CKeyIK"))
+            || chain.Contains("CKeyCamera") || chain.Contains("CKeyBlendshape"))
+            return null;
+        var l = new TransformFloats(c.FloatOffset("TranslationX", 0), c.FloatOffset("TranslationY", 0), c.FloatOffset("TranslationZ", 0),
+            c.FloatOffset("Rotation", 4), c.FloatOffset("ScaleX", 0), c.FloatOffset("ScaleY", 0), c.FloatOffset("ScaleZ", 0));
+        return l.Tx < 0 || l.Ty < 0 || l.Tz < 0 || l.Rotation < 0 || l.Sx < 0 || l.Sy < 0 || l.Sz < 0 ? null : (c, l);
+    }
+
+    internal Transform Read(ReadOnlySpan<float> f) => new(
+        new Vector3(f[Tx], f[Ty], f[Tz]),
+        new Quaternion(f[Rotation], f[Rotation + 1], f[Rotation + 2], f[Rotation + 3]),
+        new Vector3(f[Sx], f[Sy], f[Sz]));
 }
 
 /// <summary>A key value (<c>CKeyBase</c> and subclasses). Reads and writes its struct in place.</summary>

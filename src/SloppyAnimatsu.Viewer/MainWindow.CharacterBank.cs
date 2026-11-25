@@ -155,9 +155,9 @@ public sealed partial class MainWindow
             }
         }
         var current = _character;
-        if (_createCharacterButton != null) _createCharacterButton.IsEnabled = _pose != null;
-        if (_createRefPoseButton != null) _createRefPoseButton.IsEnabled = current != null && CharacterBank.CanCreateRefPose(current);
-        if (_deleteRefPoseButton != null) _deleteRefPoseButton.IsEnabled = current != null && CharacterBank.CanDeleteRefPose(current);
+        if (_createCharacterButton != null) DisabledHint.SetEnabled(_createCharacterButton, _pose != null, "an open scene");
+        if (_createRefPoseButton != null) DisabledHint.SetEnabled(_createRefPoseButton, current != null && CharacterBank.CanCreateRefPose(current), "a bound character whose bind pose is still its reference pose");
+        if (_deleteRefPoseButton != null) DisabledHint.SetEnabled(_deleteRefPoseButton, current != null && CharacterBank.CanDeleteRefPose(current), "a bound character with a reference pose of its own");
     }
 
     /// <summary>

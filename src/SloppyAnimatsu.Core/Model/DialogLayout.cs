@@ -26,8 +26,8 @@ public enum DialogStop
     /// <summary>One of the selected preferences page's value boxes.</summary>
     PageValue,
 
-    PageSave,
-    PageCancel,
+    /// <summary>The preferences dialog's one button: Restore defaults (the visible page).</summary>
+    PageDefaults,
 
     /// <summary>The shortcut dialog's action list.</summary>
     ActionList,
@@ -86,6 +86,9 @@ public enum DialogStop
 
     /// <summary>The folder separator text box beside the "Folder path in file names" toggle.</summary>
     ExportSeparator,
+
+    /// <summary>The Export Settings window's scale factor box under the toggles.</summary>
+    ExportScale,
 
     ExportRun,
     ExportCancel,
@@ -190,6 +193,7 @@ public static class DialogLayout
         .. Enumerable.Repeat(DialogStop.ExportOption, Fbx.FbxExportSettings.FolderPathOptionIndex + 1),
         DialogStop.ExportSeparator,
         .. Enumerable.Repeat(DialogStop.ExportOption, Fbx.FbxExportSettings.Options.Count - Fbx.FbxExportSettings.FolderPathOptionIndex - 1),
+        DialogStop.ExportScale,
         DialogStop.ExportRun,
         DialogStop.ExportCancel,
     ];
@@ -213,10 +217,9 @@ public static class DialogLayout
             _ => Array.Empty<DialogStop>(),
         };
 
-        var stops = new List<DialogStop>(Math.Max(values, 0) + 3) { DialogStop.PageList };
+        var stops = new List<DialogStop>(Math.Max(values, 0) + 2) { DialogStop.PageList };
         for (int i = 0; i < values; i++) stops.Add(DialogStop.PageValue);
-        stops.Add(DialogStop.PageSave);
-        stops.Add(DialogStop.PageCancel);
+        stops.Add(DialogStop.PageDefaults);
         return stops;
     }
 
@@ -251,10 +254,10 @@ public static class DialogLayout
 
     /// <summary>
     /// What a key does in a dialog. Tab and Shift+Tab walk <paramref name="stops"/>; Enter invokes the
-    /// dialog's default - Save in Preferences, Save and close in the shortcut dialog, OK in Change
+    /// dialog's default - nothing in Preferences (Enter stays with the focused control), Save and close in the shortcut dialog, OK in Change
     /// Space and the text prompt, and the focused answer of the reference-pose prompt, which has no
     /// default answer; in the Welcome window it presses the focused row, box or button, and the first
-    /// template row when nothing in the window has focus. Escape invokes Cancel in Preferences, Change
+    /// template row when nothing in the window has focus. Escape closes Preferences, Cancel in Change
     /// Space and the text prompt, closes the reference-pose prompt with no answer and the Welcome
     /// window, and cancels an armed capture in the shortcut dialog (with nothing armed the window
     /// closes).
@@ -271,7 +274,9 @@ public static class DialogLayout
             case DialogKey.Enter:
                 return dialog switch
                 {
-                    DialogId.Preferences => InvokeStop(stops, DialogStop.PageSave),
+                    // Preferences write as they change: Enter is left to the focused control (a text
+                    // box applies its value, a button presses) and never closes the window.
+                    DialogId.Preferences => DialogKeyAction.None,
                     DialogId.Shortcuts => InvokeStop(stops, DialogStop.ActionSave),
                     DialogId.RestPose => FocusedOrFirst(stops, index, DialogStop.PoseChoice),
                     DialogId.ChangeSpace => InvokeStop(stops, DialogStop.SpaceOk),
@@ -284,7 +289,7 @@ public static class DialogLayout
             case DialogKey.Escape:
                 return dialog switch
                 {
-                    DialogId.Preferences => InvokeStop(stops, DialogStop.PageCancel),
+                    DialogId.Preferences => DialogKeyAction.Close,
                     DialogId.Shortcuts => DialogKeyAction.CancelCapture,
                     DialogId.RestPose => DialogKeyAction.Close,
                     DialogId.ChangeSpace => InvokeStop(stops, DialogStop.SpaceCancel),

@@ -4,10 +4,12 @@ using SloppyAnimatsu.Core.Model;
 namespace SloppyAnimatsu.Core.Fbx;
 
 /// <summary>
-/// Who reads the FBX. <see cref="Plain"/> writes the plain layout
-/// an .akt-based tool expects; the engine presets write a bake that Unity, Godot and Blender read 1:1.
+/// Who reads the FBX. <see cref="Plain"/> writes the scene's own layout and keys as they are (kept
+/// for comparisons with other tools' exports); the engine presets write what Unity, Godot and
+/// Blender read 1:1; <see cref="Universal"/> (the app's Default target) combines every engine fix
+/// that suits all three, so one file imports into any of them.
 /// </summary>
-public enum FbxExportPreset { Plain, Unity, Godot, Blender }
+public enum FbxExportPreset { Plain, Unity, Godot, Blender, Universal }
 
 /// <summary>What an FBX export contains.</summary>
 public sealed record FbxExportOptions
@@ -49,8 +51,19 @@ public sealed record FbxExportOptions
     public bool FittedKeys { get => _fittedKeys ?? ForEngine; init => _fittedKeys = value; }
 
     /// <summary>Fitted keys are cubic with their own slopes (off: linear keys). Default off for
-    /// Blender, whose importer joins keys with straight lines whatever their tangents say.</summary>
-    public bool FittedCubic { get => _fittedCubic ?? Preset != FbxExportPreset.Blender; init => _fittedCubic = value; }
+    /// Blender, whose importer joins keys with straight lines whatever their tangents say, and for
+    /// Universal, whose file has to play the same there; linear keys play the same everywhere.</summary>
+    public bool FittedCubic
+    {
+        get => _fittedCubic ?? Preset is not (FbxExportPreset.Blender or FbxExportPreset.Universal);
+        init => _fittedCubic = value;
+    }
+
+    /// <summary>The target ignores FBX key tangents (Blender's importer), so cubic fitted keys are wrong there.</summary>
+    private bool ReaderIgnoresTangents => Preset is FbxExportPreset.Blender or FbxExportPreset.Universal;
+
+    /// <summary>The target cannot read ASCII FBX (Blender's importers).</summary>
+    private bool ReaderNeedsBinary => Preset is FbxExportPreset.Blender or FbxExportPreset.Universal;
 
     private readonly bool? _uniqueAnimationNames;
 
@@ -81,6 +94,13 @@ public sealed record FbxExportOptions
     /// <summary>Write the FBX 7.4 ASCII text format instead of binary.</summary>
     public bool Ascii { get; init; }
 
+    /// <summary>
+    /// Multiplies every position in the file (joint and mesh placements, animation translations,
+    /// vertices) by this factor, so the exported model is that many times its size in the scene.
+    /// The scene itself is left unchanged. 1 writes the scene's own size.
+    /// </summary>
+    public float ScaleFactor { get; init; } = 1f;
+
     /// <summary>Folder the texture file names point into.</summary>
     public string? TextureDirectory { get; init; }
 
@@ -102,6 +122,7 @@ public sealed record FbxExportOptions
             FbxExportPreset.Unity => "Unity",
             FbxExportPreset.Godot => "Godot",
             FbxExportPreset.Blender => "Blender",
+            FbxExportPreset.Universal => "Unity, Godot or Blender",
             _ => null,
         };
         if (Animations is not { Count: 0 })
@@ -110,11 +131,11 @@ public sealed record FbxExportOptions
                 warnings.Add($"Not baked and not fitted: {engine} blends the scene's own rotation keys as Euler angles, so joints can twist or flip between keys.");
             if (Baked && engine != null && !LinearBakedKeys)
                 warnings.Add($"Step baked keys: {engine} holds each frame's pose until the next frame instead of blending, which stutters at other frame rates.");
-            if (!Baked && FittedKeys && FittedCubic && Preset == FbxExportPreset.Blender)
-                warnings.Add("Cubic fitted keys for Blender: its FBX importer ignores the tangents and joins keys with straight lines, so the motion is off between keys. Use linear fitted keys.");
+            if (!Baked && FittedKeys && FittedCubic && ReaderIgnoresTangents)
+                warnings.Add("Cubic fitted keys: Blender's FBX importer ignores the tangents and joins keys with straight lines, so the motion is off between keys there. Use linear fitted keys.");
         }
-        if (Ascii && Preset == FbxExportPreset.Blender)
-            warnings.Add("ASCII format for Blender: Blender cannot import ASCII FBX files.");
+        if (Ascii && ReaderNeedsBinary)
+            warnings.Add("ASCII format: Blender cannot import ASCII FBX files.");
         if (engine != null && Baked && MinimumScale <= 0)
             warnings.Add($"No smallest scale: a joint scaled to zero makes {engine} compute invalid rotations for its children.");
         return warnings;
@@ -136,7 +157,7 @@ public static class FbxExporter
     public static void Export(SceneModel model, string path, FbxExportOptions? options, IProgress<double>? progress)
     {
         options ??= new FbxExportOptions();
-        var nodes = new Builder(model, options).Build(progress.Slice(0, 0.75));
+        var nodes = Build(model, options, progress.Slice(0, 0.75));
         var bytes = Encode(nodes, options, progress.Slice(0.75, 0.95));
         WriteProgress.WriteFile(path, bytes, progress.Slice(0.95, 1));
     }
@@ -144,7 +165,28 @@ public static class FbxExporter
     public static byte[] Export(SceneModel model, FbxExportOptions? options = null)
     {
         options ??= new FbxExportOptions();
-        return Encode(new Builder(model, options).Build(), options, null);
+        return Encode(Build(model, options, null), options, null);
+    }
+
+    /// <summary>
+    /// Builds the file's nodes. A scale factor other than 1 scales the scene uniformly for the
+    /// build and puts it back afterwards, so every position (skinned geometry included) is
+    /// written scaled while the document is left as it was.
+    /// </summary>
+    private static IReadOnlyList<FbxOutNode> Build(SceneModel model, FbxExportOptions options, IProgress<double>? progress)
+    {
+        float factor = options.ScaleFactor;
+        if (!(factor > 0f) || !float.IsFinite(factor))
+            throw new ArgumentOutOfRangeException(nameof(options), factor, "The export scale factor must be a positive number.");
+        var rescale = factor != 1f ? SceneRescale.ScaleUniformly(model, factor) : null;
+        try
+        {
+            return new Builder(model, options).Build(progress);
+        }
+        finally
+        {
+            rescale?.Undo();
+        }
     }
 
     private static byte[] Encode(IReadOnlyList<FbxOutNode> nodes, FbxExportOptions options, IProgress<double>? progress) =>

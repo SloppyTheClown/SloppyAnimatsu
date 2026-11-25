@@ -659,6 +659,8 @@ public static class FbxImporter
                         materialOfPolygon[p] = slots[p] >= 0 && slots[p] < materialRefs.Count ? (uint)slots[p] : 0u;
             }
             for (int p = 0; p < polygons.Count; p++) ((AktStruct)polygons[p]!).Set("MatIndex", materialOfPolygon[p]);
+            // Materials are final now, so the polygons can be stored packed like a loaded mesh's.
+            mesh.Set("PolygonArray", AktArrayColumn.Pack(_schema, "CPolygon", polygons));
 
             var normals = ReadLayers(geometry, "LayerElementNormal", "Normals", "NormalsIndex", 3, cornerCount, cornerPoints, polygonSizes);
             if (normals is { } normalLayers)
@@ -775,7 +777,7 @@ public static class FbxImporter
                 }
                 arrays.Add(array);
             }
-            mesh.Set("SkinWeightArray", arrays);
+            mesh.Set("SkinWeightArray", AktArrayColumn.Pack(_schema, "CVertexWeightArray", arrays));
             return true;
         }
 

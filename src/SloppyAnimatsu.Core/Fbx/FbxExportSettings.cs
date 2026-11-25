@@ -42,12 +42,19 @@ public sealed record FbxExportSettings
     public bool EmbedMedia { get; init; } = true;
     public bool Ascii { get; init; }
 
+    /// <summary>Every position in the file is multiplied by this (1 = the scene's own size); stored beside the flags word.</summary>
+    public float ScaleFactor { get; init; } = 1f;
+
+    /// <summary>Whether <paramref name="factor"/> can be an export scale factor: a positive, finite number.</summary>
+    public static bool IsValidScaleFactor(float factor) => factor > 0f && float.IsFinite(factor);
+
     /// <summary>The settings for <paramref name="target"/>. From <paramref name="keep"/> (a preset
     /// button pressed in the window) only the target changes: the target picks the exporter preset
     /// (hierarchy, key interpolation and clip naming) and every option keeps its value, with
     /// <see cref="Warnings"/> saying when one does not suit the target. Without it, the base settings:
-    /// baked for Default (engine targets write fitted keys instead, which play the same with far fewer
-    /// keys), with the character node and embedded media, in binary.</summary>
+    /// baked for Default, whose linear per-frame keys every reader plays the same (engine targets
+    /// write fitted keys instead, which play the same with far fewer keys), with the character node
+    /// and embedded media, in binary.</summary>
     public static FbxExportSettings For(FbxExportTarget target, FbxExportSettings? keep = null) =>
         keep is not null
             ? keep with { Target = target }
@@ -69,8 +76,6 @@ public sealed record FbxExportSettings
         }
         else
         {
-            if (!Baked && Target == FbxExportTarget.Default)
-                warnings.Add("Not baked with the Default target: the scene's own keys are written, and Unity, Godot and Blender blend rotation keys differently, so joints can twist or flip between keys there. Pick that program's target, or tick Baked.");
             if (FolderPathInName && !OneFilePerAnimation)
                 warnings.Add("Folder path in file names only applies with one file per animation.");
         }
@@ -96,7 +101,7 @@ public sealed record FbxExportSettings
     public static IReadOnlyList<(FbxExportTarget Target, string Label, string Tip)> Targets { get; } =
     [
         (FbxExportTarget.Default, "Default",
-            "A general-purpose FBX: the scene's hierarchy and keys as they are (tick Baked so other programs play the motion the same). Changes only the target; the options below keep their values."),
+            "The most compatible FBX: one file that Blender, Unity and Godot all import as it plays here. A plain joint hierarchy so bone positions come out exact, linear keys (every frame when baked, otherwise only the keys the motion needs), no zero scales, unique clip names, binary FBX. Changes only the target; the options below keep their values."),
         (FbxExportTarget.Blender, "Blender",
             "Prepared for Blender's FBX importer: a plain joint hierarchy so bone positions come out exact, fitted linear keys (only the keys the motion needs), no zero scales, unique clip names, binary FBX (Blender cannot read ASCII FBX). Changes only the target; the options below keep their values."),
         (FbxExportTarget.Unity, "Unity",
@@ -124,7 +129,7 @@ public sealed record FbxExportSettings
             "Export only the animations selected in the Anim Bank. A selected folder exports every animation inside it, sub-folders included. Off: every animation of the exported characters.",
             s => s.OnlySelectedAnimations, (s, v) => s with { OnlySelectedAnimations = v }),
         new("Baked Animations",
-            "Write a key on every frame for every joint, so the motion plays the same in any program (largest file). Off: for the Unity, Godot and Blender presets, write only the keys the motion needs, with explicit tangents, so engines play it within a small tolerance with far fewer keys; for akeytsu, write the scene's own keys and tangents.",
+            "Write a key on every frame for every joint, so the motion plays the same in any program (largest file). Off: write only the keys the motion needs, so other programs play it within a small tolerance with far fewer keys (with explicit tangents for Unity and Godot; linear keys for Default and Blender, whose importer ignores tangents).",
             s => s.Baked, (s, v) => s with { Baked = v }),
         new("Multi-FBX (one file per animation)",
             "Write one FBX per animation, named <file>_<animation name>.fbx; each holds the exported characters and that one animation. Two animations with the same name get _2, _3… added.",
@@ -188,7 +193,7 @@ public sealed record FbxExportSettings
         FbxExportTarget.Blender => FbxExportPreset.Blender,
         FbxExportTarget.Unity => FbxExportPreset.Unity,
         FbxExportTarget.Godot => FbxExportPreset.Godot,
-        _ => FbxExportPreset.Plain,
+        _ => FbxExportPreset.Universal,
     };
 
     /// <summary>
@@ -231,6 +236,7 @@ public sealed record FbxExportSettings
         ExportCameraTargets = CameraTargets,
         EmbedMedia = EmbedMedia,
         Ascii = Ascii,
+        ScaleFactor = IsValidScaleFactor(ScaleFactor) ? ScaleFactor : 1f,
         DocumentPath = documentPath,
         TextureDirectory = textureDirectory,
     };

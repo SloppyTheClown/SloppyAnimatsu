@@ -170,6 +170,7 @@ public sealed partial class MainWindow
             };
             _groupButtons[g] = button;
         }
+        ApplyTranslationUnit(); // the Translate button's hover text names the unit
         foreach (var field in _extraFields) field.Show(null, enabled: false);
         for (int i = 0; i < _extraFields.Length; i++)
         {
@@ -336,7 +337,7 @@ public sealed partial class MainWindow
         _syncing = true;
         try
         {
-            _compensateBox.IsEnabled = targets.Length > 0;
+            DisabledHint.SetEnabled(_compensateBox, targets.Length > 0, "a selected object");
             _compensateBox.IsChecked = targets.Length == 0 ? false : shown;
             _compensateBox.Content = keyed ? "Compensate Scale ◆" : "Compensate Scale";
         }
@@ -392,7 +393,7 @@ public sealed partial class MainWindow
 
     private void SyncFreezeButton()
     {
-        if (_transformActions != null) _transformActions[^1].IsEnabled = CanResetAndFreeze();
+        if (_transformActions != null) DisabledHint.SetEnabled(_transformActions[^1], CanResetAndFreeze(), "the Rigging context on the rest pose, and selected meshes that can be frozen");
     }
 
     private void ResetAndFreeze()
@@ -427,6 +428,8 @@ public sealed partial class MainWindow
             _pose.ReloadGeometry();
             Apply();
         }
+        else if (_pose != null && IsNormalizeStep(step?.Description))
+            ReloadAfterRescale();
         AfterCharBankHistoryStep(step);
         AfterSceneDeleteHistoryStep(step);
     }

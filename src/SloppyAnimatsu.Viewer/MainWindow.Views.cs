@@ -235,6 +235,7 @@ public sealed partial class MainWindow
             _status.Text = "Pose evaluation failed: " + ex.Message;
         }
         ApplyViewPrefDecorators(renderer);
+        renderer.Ghosts = ComputeGhosts();
         UpdateViewportViews();
         UpdateSelection();
         RefreshVertexPoints();
@@ -335,10 +336,20 @@ public sealed partial class MainWindow
         }
         IReadOnlyList<ViewRect> readOnlyList = ViewGrid.Rects(_layout);
         List<RenderViewport> list = new List<RenderViewport>(readOnlyList.Count);
+        bool perView = DecoratorsPerView;
+        bool skinning = SkinTintShown();
         for (int i = 0; i < readOnlyList.Count; i++)
         {
             ViewState state = ((i < _viewStates.Count) ? _viewStates[i] : new ViewState());
-            list.Add(new RenderViewport(CameraFor(state), readOnlyList[i]));
+            ViewDisplay? display = null;
+            if (perView)
+            {
+                // A view without its own switches yet starts from the current ones.
+                state.Display ??= CheckboxDisplay();
+                // The skin-weight tint replaces textures in every view.
+                display = skinning ? state.Display with { Textured = false } : state.Display;
+            }
+            list.Add(new RenderViewport(CameraFor(state), readOnlyList[i], display));
         }
         renderer.Views = list;
         renderer.ActiveViewIndex = Math.Clamp(_focusedView, 0, list.Count - 1);

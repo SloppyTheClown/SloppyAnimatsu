@@ -75,6 +75,74 @@ public class PoseEditingTests
     }
 
     [SceneTheory, SceneSamples]
+    public void History_SpillsPastItsMemoryBudget_AndDropsOnlyPastItsDiskBudget(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        // Spilling moves a snapshot's bytes, so every record gets its own snapshot. The records carry
+        // a Before side only, so Push has nothing to trim.
+        EditSnapshot Take() => EditSnapshot.TakeScene(null, model.Scene);
+        long one = Take().EstimatedBytes;
+        Assert.True(one > 0);
+
+        // Within the budget nothing moves.
+        using (var roomy = new EditHistory { MemoryBudget = 10 * one })
+        {
+            foreach (var name in new[] { "a", "b", "c" })
+                roomy.Push(new EditRecord(name, Take(), null!));
+            Assert.Equal(3, roomy.Count);
+            Assert.Equal(3 * one, roomy.EstimatedBytes);
+            Assert.Equal(0, roomy.SpilledBytes);
+        }
+
+        // Past the memory budget the older steps go to the spill file and stay undoable; the newest
+        // step stays in memory.
+        using (var tight = new EditHistory { MemoryBudget = one + one / 2 })
+        {
+            foreach (var name in new[] { "a", "b", "c" })
+                tight.Push(new EditRecord(name, Take(), null!));
+            Assert.Equal(3, tight.Count);
+            Assert.True(tight.SpilledBytes > 0);
+            // A spilled step keeps its entries and reference tables in memory, only its bytes move.
+            Assert.True(tight.EstimatedBytes < 3 * one);
+            Assert.False(tight.NextUndo!.Before.IsReleased);
+            Assert.Equal(0, tight.NextUndo.Before.SpilledBytes);
+            long fileBytes = tight.SpillFileBytes;
+            Assert.True(fileBytes >= tight.SpilledBytes);
+
+            // A further push spills one more step and does not write the spilled ones again.
+            long spilledBefore = tight.SpilledBytes;
+            tight.Push(new EditRecord("d", Take(), null!));
+            Assert.Equal(tight.SpillFileBytes - fileBytes, tight.SpilledBytes - spilledBefore);
+
+            // Every step comes back, the spilled ones read from the file.
+            foreach (var name in new[] { "d", "c", "b", "a" })
+            {
+                var record = tight.Undo()!;
+                Assert.Equal(name, record.Description);
+                record.Before.Restore();
+            }
+            Assert.Null(tight.Undo());
+        }
+
+        // A record larger than the whole budget is still kept in memory: the newest step can always be undone.
+        using (var tiny = new EditHistory { MemoryBudget = 1 })
+        {
+            tiny.Push(new EditRecord("big", Take(), null!));
+            Assert.Equal(1, tiny.Count);
+            Assert.Equal(0, tiny.SpilledBytes);
+        }
+
+        // Past the disk budget the oldest steps are dropped, the newest kept.
+        using (var full = new EditHistory { MemoryBudget = 1, DiskBudget = 1 })
+        {
+            foreach (var name in new[] { "a", "b", "c" })
+                full.Push(new EditRecord(name, Take(), null!));
+            Assert.Equal(1, full.Count);
+            Assert.Equal("c", full.Undo()!.Description);
+        }
+    }
+
+    [SceneTheory, SceneSamples]
     public void Drag_BetweenKeys_CreatesAKeyAndMixesToTheDraggedPose(string path)
     {
         var model = TestFiles.LoadScene(path);

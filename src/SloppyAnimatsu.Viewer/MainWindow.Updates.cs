@@ -192,7 +192,7 @@ public sealed partial class MainWindow
         string? processPath = Environment.ProcessPath;
         string exeName = processPath != null ? Path.GetFileName(processPath) : (OperatingSystem.IsWindows() ? "SloppyAnimatsu.Viewer.exe" : "SloppyAnimatsu.Viewer");
         bool installedBySetup = File.Exists(Path.Combine(appFolder, SetupListFile));
-        bool buildTree = UpdateCheck.IsBuildTree(appFolder);
+        bool buildTree = UpdateCheck.IsDevelopmentFolder(appFolder);
         (UpdateMethod method, ReleaseAsset? asset) = UpdateCheck.ChooseMethod(release, UpdateCheck.CurrentRuntime,
             installedBySetup, IsWritable(appFolder), buildTree);
         if (method == UpdateMethod.ReleasePage || asset == null)

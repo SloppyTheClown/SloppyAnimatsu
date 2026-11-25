@@ -53,7 +53,7 @@ public sealed class AktDocument
     /// <summary>Saves in <paramref name="format"/>, reporting 0 to 1 as objects are written and the file goes to disk.</summary>
     public void Save(string path, AktFileFormat format, IProgress<double>? progress)
     {
-        var payload = AktWriter.Write(this, OmittedFor(format), progress.Slice(0, 0.7));
+        var payload = AktWriter.Write(this, OmittedFor(format), progress.Slice(0, 0.7), EmptiedFor(format));
         var bytes = AktContainer.Wrap(payload, format);
         progress?.Report(0.9);
         WriteProgress.WriteFile(path, bytes, progress.Slice(0.9, 1));
@@ -61,12 +61,18 @@ public sealed class AktDocument
 
     /// <summary>
     /// The file bytes in <paramref name="format"/>. The plain .akt layout leaves out SloppyAnimatsu's own
-    /// members (<see cref="AkeytsuCompatibility.OmittedMembers"/>), so the file holds exactly the original scheme.
+    /// members (<see cref="AkeytsuCompatibility.OmittedMembers"/>), so the file holds exactly the original scheme,
+    /// and writes empty the weights of meshes waiting to be bound in another character
+    /// (<see cref="AkeytsuCompatibility.EmptiedFields"/>).
     /// </summary>
-    public byte[] Write(AktFileFormat format) => AktContainer.Wrap(AktWriter.Write(this, OmittedFor(format)), format);
+    public byte[] Write(AktFileFormat format) =>
+        AktContainer.Wrap(AktWriter.Write(this, OmittedFor(format), null, EmptiedFor(format)), format);
 
     private static IReadOnlySet<string>? OmittedFor(AktFileFormat format) =>
         format.Kind == AktFileKind.Akeytsu ? AkeytsuCompatibility.OmittedMembers : null;
+
+    private IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? EmptiedFor(AktFileFormat format) =>
+        format.Kind == AktFileKind.Akeytsu ? AkeytsuCompatibility.EmptiedFields(this) : null;
 }
 
 public sealed class AktFormatException : Exception

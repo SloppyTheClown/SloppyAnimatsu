@@ -23,7 +23,8 @@ public class PreferencePageLayoutTests
             Assert.Equal(22, Curated(session, "CAutoRiggerPreferences"));
             Assert.Equal(16, Curated(session, "CColorsPreferences"));
             Assert.Equal(1, Curated(session, "CCurveboardPreferences"));
-            Assert.Equal(3, Curated(session, "CDataProtectionPreferences"));
+            // Hidden: SloppyAnimatsu collects no data, so the consent page is not listed.
+            Assert.True(session.IndexOf("CDataProtectionPreferences") < 0);
             Assert.Equal(8, Curated(session, "CDisplayPreferences"));
             Assert.Equal(9, Curated(session, "CGeneralPreferences"));
             Assert.Equal(1, Curated(session, "CPickerPreferences"));
@@ -472,13 +473,6 @@ public class PreferencePageLayoutTests
         WithCopy(preferences =>
         {
             var session = new PreferencesSession(preferences);
-            var link = Labelled(RowsOf(session, "CDataProtectionPreferences"), "Read privacy policy online");
-            Assert.Equal(PreferenceRowWidget.Link, link.Widget);
-            Assert.Equal("PrivacyPolicyHyperlink", link.Member);
-            Assert.False(link.Editable);
-            Assert.False(link.TrySetFromText("True", out string? error));
-            Assert.Contains("link", error);
-
             var hints = Labelled(RowsOf(session, "CSpinnerPreferences"), "Show axis hints");
             Assert.Equal(PreferenceRowWidget.Check, hints.Widget);
             Assert.Null(hints.Member);
@@ -524,8 +518,6 @@ public class PreferencePageLayoutTests
             Assert.Equal("2.500", edit.Text);
 
             // Rows with no member never write.
-            var link = Labelled(RowsOf(session, "CDataProtectionPreferences"), "Read privacy policy online");
-            Assert.Empty(PreferencesSession.Changed([(link, "True")]));
             var fps = Labelled(RowsOf(session, "CTimelinePreferences"), "Scene Frame Rate");
             Assert.Empty(PreferencesSession.Changed([(fps, "48")]));
         });
@@ -548,6 +540,60 @@ public class PreferencePageLayoutTests
                         $"{row.ClassName}.{row.Member} ({row.Label}): drew '{before}', read back '{row.Text}'");
                 }
             }
+        });
+    }
+
+    [Fact]
+    public void TransformPage_TranslationUnit_DefaultsToSceneUnits_AndRoundTripsThroughTheDialogRow()
+    {
+        WithCopy(preferences =>
+        {
+            // A profile without the page reads scene units; the page is added on demand.
+            Assert.Equal(TranslationUnit.SceneUnits, preferences.TranslationUnit);
+            Assert.True(preferences.EnsureTransformPage());
+            Assert.False(preferences.EnsureTransformPage());
+
+            var session = new PreferencesSession(preferences);
+            var rows = RowsOf(session, "CTransformPreferences");
+            var unit = Row(rows, Preferences.TranslationUnitMember);
+            Assert.Equal("Translation unit", rows[0].Label);
+            Assert.Equal(PreferenceRowWidget.Combo, unit.Widget);
+            Assert.Equal(["Centimeters (default)", "Meters (scene units / 100)"], unit.OptionNames);
+            Assert.Equal("Centimeters (default)", unit.Text);
+
+            // The dialog's own path: the combo hands back the option name, Changed picks it, Save writes it.
+            var edits = PreferencesSession.Changed([(unit, "Meters (scene units / 100)")]);
+            Assert.Single(edits);
+            Assert.True(session.TrySave(edits), session.Status);
+            Assert.Equal(TranslationUnit.Meters, preferences.TranslationUnit);
+            Assert.Equal(TranslationUnit.Meters, Preferences.Load(preferences.Path).TranslationUnit);
+        });
+
+        // 50 in the field in metres holds 5000 scene units.
+        Assert.Equal(1f, TranslationUnit.SceneUnits.DisplayScale());
+        Assert.Equal(50f, 5000f * TranslationUnit.Meters.DisplayScale(), 4);
+    }
+
+    /// <summary>
+    /// Every editable row's drawn text (an option name, a "m 1.000" length, a flags bit's True/False)
+    /// must commit through the dialog's path; writing the raw text into the member refused them.
+    /// </summary>
+    [Fact]
+    public void EveryEditableRow_CommitsItsOwnDrawnText_ThroughTheDialogPath()
+    {
+        WithCopy(preferences =>
+        {
+            preferences.EnsureTransformPage();
+            var session = new PreferencesSession(preferences);
+            var failures = new List<string>();
+            for (int page = 0; page < session.Entries.Count; page++)
+                foreach (var row in session.Rows(page))
+                {
+                    if (!row.Editable || row.Field is not { } field || row.Text is not { } text) continue;
+                    var commit = PreferencesSession.Commit([new PreferenceEdit(field, text, row)]);
+                    if (!commit.Ok) failures.Add($"{session.Title(page)} / {row.Label}: {commit.Status}");
+                }
+            Assert.True(failures.Count == 0, string.Join("\n", failures));
         });
     }
 

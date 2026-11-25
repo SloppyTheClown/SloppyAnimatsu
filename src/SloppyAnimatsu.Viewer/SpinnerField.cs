@@ -76,6 +76,11 @@ public sealed class SpinnerField : Grid
     /// <summary>Whether the field shows a value that can be edited.</summary>
     public bool IsEditable => _text.IsEnabled;
 
+    /// <summary>What the field needs to be editable, shown in its hover text while it is greyed out.</summary>
+    public string Requires { get; set; } = "a selected object that can be edited here";
+
+    private void SetTextEnabled(bool enabled) => DisabledHint.SetEnabled(_text, enabled, Requires);
+
     private void SyncScrub()
     {
         _scrub.IsEnabled = _text.IsEnabled;
@@ -98,8 +103,48 @@ public sealed class SpinnerField : Grid
     /// <summary>Raised when a drag ends, before its <see cref="Committed"/>: the owner drops its live preview.</summary>
     public event Action? DragEnded;
 
-    /// <summary>The value the field last showed or committed.</summary>
+    /// <summary>The value the field last showed or committed, in model units.</summary>
     public float Value => _value;
+
+    /// <summary>
+    /// Display units per model unit: the text shows <c>value * DisplayScale</c> and typed text is
+    /// divided by it, while <see cref="Value"/>, <see cref="Step"/> and every event stay in model
+    /// units. 1 by default; 0.01 shows centimetre scene units as metres.
+    /// </summary>
+    public float DisplayScale
+    {
+        get => _displayScale;
+        set
+        {
+            if (!(value > 0) || value == _displayScale) return;
+            _displayScale = value;
+            // Three decimals of the model unit stay visible at any scale (0.01 -> five decimals).
+            int decimals = 3 + Math.Max(0, (int)Math.Round(-Math.Log10(value)));
+            _format = "0." + new string('#', decimals);
+            if (_text.IsEnabled && _dragStart == null) Show(_value, enabled: true, force: true);
+        }
+    }
+
+    private float _displayScale = 1;
+    private string _format = "0.###";
+
+    /// <summary>
+    /// Text shown in front of the number (the unit, e.g. "m" for metres), or empty. Typed text may
+    /// carry it or leave it out; it is stripped before parsing.
+    /// </summary>
+    public string Prefix
+    {
+        get => _prefix;
+        set
+        {
+            value ??= "";
+            if (value == _prefix) return;
+            _prefix = value;
+            if (_text.IsEnabled && _dragStart == null) Show(_value, enabled: true, force: true);
+        }
+    }
+
+    private string _prefix = "";
 
     /// <summary>
     /// Shows <paramref name="value"/>, or a blank, disabled field when it is null. A focused field
@@ -112,18 +157,21 @@ public sealed class SpinnerField : Grid
         _syncing = true;
         if (value is { } v)
         {
-            _value = v;
+            // Text still reading what the field last showed is not an edit, even when the shown
+            // digits round the model value (a metre display drops sub-millimetre digits).
             bool editing = !force && _text.IsFocused
-                           && float.TryParse(_text.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float typed)
+                           && _text.Text != Format(_value)
+                           && TryParseText(out float typed)
                            && MathF.Abs(typed - v) >= 1e-6f;
+            _value = v;
             if (!editing) _text.Text = Format(v);
-            _text.IsEnabled = enabled;
+            SetTextEnabled(enabled);
         }
         else
         {
             _value = 0;
             _text.Text = "";
-            _text.IsEnabled = false;
+            SetTextEnabled(false);
         }
         SyncScrub();
         _syncing = false;
@@ -132,7 +180,10 @@ public sealed class SpinnerField : Grid
     private void CommitText()
     {
         if (_syncing) return;
-        if (!float.TryParse(_text.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
+        // Untouched text (what Format showed) commits nothing: parsing it back would turn the
+        // rounding of the display into a real edit when the field merely loses focus.
+        if (_text.Text == Format(_value)) return;
+        if (!TryParseText(out float value))
         {
             _text.Text = Format(_value);
             return;
@@ -198,5 +249,30 @@ public sealed class SpinnerField : Grid
         }
     }
 
-    private static string Format(float value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+    /// <summary>The field's text in model units (the typed display value divided by <see cref="DisplayScale"/>).</summary>
+    private bool TryParseText(out float value)
+    {
+        string text = (_text.Text ?? "").Trim();
+        // The unit may be typed in front of the number (as shown) or behind it, or left out.
+        if (_prefix.Length > 0)
+        {
+            if (text.StartsWith(_prefix, StringComparison.OrdinalIgnoreCase)) text = text[_prefix.Length..].Trim();
+            else if (text.EndsWith(_prefix, StringComparison.OrdinalIgnoreCase)) text = text[..^_prefix.Length].Trim();
+        }
+        if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float shown))
+        {
+            value = 0;
+            return false;
+        }
+        value = shown / _displayScale;
+        return true;
+    }
+
+    /// <summary>A model value as the field shows it, in display units.</summary>
+    private string Format(float value)
+    {
+        string number = (value * _displayScale).ToString(_format, CultureInfo.InvariantCulture);
+        // A space between the unit and the number ("m 1.25"); parsing trims it again.
+        return _prefix.Length > 0 ? _prefix + " " + number : number;
+    }
 }

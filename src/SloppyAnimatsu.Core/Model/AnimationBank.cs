@@ -204,7 +204,7 @@ internal static class TrackFactory
 
     private static void SetRefArray(AktSchema schema, AktStruct key, IReadOnlyList<Transform> chain)
     {
-        var items = (List<object?>)key["RefArray"]!;
+        var items = (IList<object?>)key["RefArray"]!;
         items.Clear();
         foreach (var t in chain)
         {

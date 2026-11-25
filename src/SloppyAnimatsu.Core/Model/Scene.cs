@@ -40,13 +40,16 @@ public sealed class Scene : SceneObject
     /// <summary>The joint size factor a scene without one is drawn with.</summary>
     public const float DefaultJointRenderSize = 5f;
 
-    /// <summary>The joint size factor of the high density area (Light mode only); not drawn yet.</summary>
+    /// <summary>
+    /// The joint size factor of high density areas (Light joint display only): a joint whose nearest
+    /// neighbour is close (fingers, face) is drawn smaller, in proportion to that gap and this factor.
+    /// </summary>
     public float JointRenderSizeHighDensity => Factor("JointRenderSizeHighDensity", 6f);
 
-    /// <summary>The pivot size factor; not drawn yet.</summary>
+    /// <summary>The size factor of the selected joints' pivot axes, relative to each joint's dot.</summary>
     public float PivotRenderSize => Factor("PivotRenderSize", 3f);
 
-    /// <summary>The pivot size factor of unselected joints; not drawn yet.</summary>
+    /// <summary>The size factor of the unselected joints' pivot axes, relative to each joint's dot.</summary>
     public float UnselectedPivotRenderSize => Factor("UnselectedPivotRenderSize", 0.4f);
 
     private float Factor(string member, float fallback)

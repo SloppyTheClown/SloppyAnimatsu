@@ -2,6 +2,19 @@ using System.Numerics;
 
 namespace SloppyAnimatsu.Core.Model;
 
+/// <summary>How the frame distance between two neighbouring keys is drawn (<see cref="TimelineLayout.GapMark"/>).</summary>
+public enum GapMarkKind
+{
+    /// <summary>The gap is too narrow for anything.</summary>
+    None,
+    /// <summary>A plain line between the keys.</summary>
+    Line,
+    /// <summary>A line with an arrowhead at each key.</summary>
+    Arrows,
+    /// <summary>The frame count centred, with an arrow from it to each key.</summary>
+    Labelled,
+}
+
 /// <summary>
 /// The timeline's geometry and hit testing without a window
 /// a frame ruler, one row per stack of
@@ -50,6 +63,41 @@ public sealed class TimelineLayout
         if (k + 1 < count) gap = Math.Min(gap, X(keys[k + 1].Time) - x);
         return Math.Clamp(gap - 2, KeyMinWidth, KeyMaxWidth);
     }
+
+    /// <summary>Space kept clear on each side of a gap mark, between it and the key boxes.</summary>
+    public const double GapMarkPad = 2;
+
+    /// <summary>An arrowhead's length; a shaft shorter than this beside the number is not drawn.</summary>
+    public const double GapArrowHead = 3;
+
+    /// <summary>The narrowest gap that still gets a line with an arrowhead at each end.</summary>
+    public const double GapArrowsMinWidth = 2 * GapMarkPad + 3 * GapArrowHead;
+
+    /// <summary>The narrowest gap that still gets a plain line.</summary>
+    public const double GapLineMinWidth = 2 * GapMarkPad + 3;
+
+    /// <summary>
+    /// What fits in the free space between two neighbouring key boxes, <paramref name="gap"/> DIPs
+    /// wide, when the frame distance's text is <paramref name="labelWidth"/> wide: the number with
+    /// an arrow out to each key while that fits, else a line with an arrowhead at each end, else a
+    /// plain line, else nothing.
+    /// </summary>
+    public static GapMarkKind GapMark(double gap, double labelWidth)
+    {
+        if (gap >= labelWidth + 2 * GapMarkPad + 2 * (GapArrowHead + 3)) return GapMarkKind.Labelled;
+        if (gap >= GapArrowsMinWidth) return GapMarkKind.Arrows;
+        if (gap >= GapLineMinWidth) return GapMarkKind.Line;
+        return GapMarkKind.None;
+    }
+
+    /// <summary>The free space between key <paramref name="k"/>'s box and key <c>k + 1</c>'s.</summary>
+    public double GapAfter(AnimStack stack, int count, int k) =>
+        X(stack.Keys[k + 1].Time) - X(stack.Keys[k].Time)
+        - KeyWidth(stack, count, k) / 2 - KeyWidth(stack, count, k + 1) / 2;
+
+    /// <summary>The frame distance between two keys as the timeline writes it: whole frames plain, else up to two decimals.</summary>
+    public static string FrameDistanceText(float from, float to) =>
+        (to - from).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>A fade handle's side, half a row.</summary>
     public const double FadeHandle = RowHeight / 2;

@@ -129,21 +129,41 @@ public sealed partial class MainWindow
         }
     }
 
+    /// <summary>
+    /// Insert Joint: a new joint halfway along the bone between two selected joints, where one is
+    /// the other's direct parent; the child is re-parented under the new joint and keeps its world
+    /// placement. One selected joint uses the bone to its parent joint.
+    /// </summary>
     private async Task InsertJoint()
     {
-        Object3D selected = _selected;
-        if (!(selected is Joint joint))
+        Joint? child = InsertJointChild(out string? problem);
+        if (child == null)
         {
-            _status.Text = "Select the joint to insert above.";
+            _status.Text = problem;
+            return;
         }
-        else if (RigEditorFor("insert a joint") != null && _character != null)
+        if (RigEditorFor("insert a joint") == null || _character == null) return;
+        string name = await TextPromptDialog.Ask(this, "Insert joint",
+            $"Name of the joint between {((SceneObject?)child.Parent)?.Name} and {child.Name}",
+            RigEditor.UniqueControllerName(_character, "Joint"));
+        if (name != null) InsertJointNow(child, name);
+    }
+
+    /// <summary>The lower joint of the bone Insert Joint splits, or null with the reason.</summary>
+    private Joint? InsertJointChild(out string? problem)
+    {
+        problem = null;
+        var joints = _selectedAll.OfType<Joint>().Distinct().ToList();
+        if (joints.Count == 2)
         {
-            string name = await TextPromptDialog.Ask(this, "Insert joint", "Name", RigEditor.UniqueControllerName(_character, "Joint"));
-            if (name != null)
-            {
-                BeginPlacement(new PendingPlacement(Insert: true, joint, name));
-            }
+            if (ReferenceEquals(joints[1].Parent, joints[0])) return joints[1];
+            if (ReferenceEquals(joints[0].Parent, joints[1])) return joints[0];
+            problem = "Insert Joint needs two joints connected by a bone: one must be the other's direct parent.";
+            return null;
         }
+        if (joints.Count == 1 && joints[0].Parent is Joint) return joints[0];
+        problem = "Select the two joints at the ends of a bone (a parent and its child) to insert a joint between them.";
+        return null;
     }
 
     private void CreateJointNow(string name)
@@ -291,6 +311,10 @@ public sealed partial class MainWindow
         {
             return;
         }
+        if (MoveMeshFromOutliner(dragged, target, place))
+        {
+            return;
+        }
         Object3D parent = OutlinerDrag.NewParent(target, place);
         if (!ReferenceEquals(parent, target) && !ReferenceEquals(dragged, target)
             && OutlinerDrag.Verdict(dragged, target, place) == OutlinerDropVerdict.Move)
@@ -324,6 +348,10 @@ public sealed partial class MainWindow
         case OutlinerDropVerdict.Constrained:
             _status.Text = dragged.Name + " cannot be reparented.";
             break;
+        case OutlinerDropVerdict.LockedMesh:
+        case OutlinerDropVerdict.SceneRoot:
+            _status.Text = DropRefusal(dragged, OutlinerDrag.Verdict(dragged, target));
+            break;
         case OutlinerDropVerdict.Self:
             break;
         case OutlinerDropVerdict.Move:
@@ -337,6 +365,59 @@ public sealed partial class MainWindow
             break;
         }
         }
+    }
+
+    private static string DropRefusal(Object3D dragged, OutlinerDropVerdict verdict) => verdict switch
+    {
+        OutlinerDropVerdict.LockedMesh => dragged.Name + " is locked to its skin: unlock it before moving it out of its character.",
+        OutlinerDropVerdict.SceneRoot => "Only a mesh can be dragged out of its character.",
+        OutlinerDropVerdict.Character => "A character stays at the scene root.",
+        OutlinerDropVerdict.Cycle => "An object cannot be dropped on its own descendant.",
+        OutlinerDropVerdict.Constrained => dragged.Name + " cannot be reparented.",
+        _ => "",
+    };
+
+    /// <summary>
+    /// The hierarchy panel's mesh drag that changes character: out to the scene root (a drop beside
+    /// a top-level row, or on the empty space below the rows, <paramref name="target"/> null) or into
+    /// another character. A skinned mesh is unbound on the way out. Returns false when the drop is
+    /// not such a move (not a mesh, or a move inside one character), so the caller handles it as a
+    /// hierarchy reparent.
+    /// </summary>
+    private bool MoveMeshFromOutliner(Object3D dragged, Object3D? target, OutlinerDropPlace place)
+    {
+        if (dragged is not Mesh mesh || _pose == null || _character == null)
+        {
+            if (target == null && _pose != null) _status.Text = DropRefusal(dragged, OutlinerDrag.RootVerdict(dragged));
+            return target == null;
+        }
+        if (target != null && ReferenceEquals(dragged, target)) return true;
+        Object3D? parent = target == null ? null : OutlinerDrag.DropParent(mesh, target, place);
+        Character? from = OutlinerDrag.OwnerOf(mesh);
+        Character? to = parent == null ? null : OutlinerDrag.OwnerOf(parent);
+        bool toRoot = parent == null;
+        // A move inside one character (or between free meshes) is the ordinary hierarchy reparent.
+        if (!toRoot && ReferenceEquals(from, to)) return false;
+        var verdict = toRoot ? OutlinerDrag.RootVerdict(mesh) : OutlinerDrag.Verdict(mesh, target!, place);
+        if (verdict != OutlinerDropVerdict.Move)
+        {
+            if (verdict != OutlinerDropVerdict.Self) _status.Text = DropRefusal(mesh, verdict);
+            return true;
+        }
+        bool skinned = mesh.Skinned && !ReferenceEquals(from, to);
+        Object3D? beside = target != null && place != OutlinerDropPlace.Inside ? target : null;
+        string where = toRoot ? "the scene" : to!.Name ?? "the character";
+        RunRigEdit((skinned ? "Unbound and moved " : "Moved ") + mesh.Name + " to " + where, delegate
+        {
+            SkinEditor.MoveMesh(mesh, parent, beside, place == OutlinerDropPlace.After);
+            return null;
+        }, "move meshes between characters");
+        if (!_rigEditFailed && to != null)
+        {
+            _status.Text = (skinned ? "Unbound " : "Moved ") + mesh.Name + " into " + to.Name
+                           + ": Bind Skin there to skin it to that rig.";
+        }
+        return true;
     }
 
     private void AddIk()

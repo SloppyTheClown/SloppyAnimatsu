@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using SloppyAnimatsu.Core.Akt;
 using SloppyAnimatsu.Core.Aknm;
 using SloppyAnimatsu.Core.Model;
@@ -285,7 +285,7 @@ public sealed class AknmTests : IDisposable
             case AktStruct s:
                 foreach (var f in s.Fields) AssertResolved(f.Value, inside);
                 break;
-            case List<object?> list:
+            case IList<object?> list when list is not object[]: // a plain or a packed key list
                 foreach (var v in list) AssertResolved(v, inside);
                 break;
             case object?[] tuple:
@@ -320,7 +320,7 @@ public sealed class AknmTests : IDisposable
                 break;
             case AktReference r:
             {
-                var other = Assert.IsType<AktReference>(actual);
+                var other = Assert.IsAssignableFrom<AktReference>(actual);
                 Assert.Equal(r.Target?.ClassKey, other.Target?.ClassKey);
                 Assert.Equal(r.Target?.Name, other.Target?.Name);
                 break;
@@ -334,7 +334,7 @@ public sealed class AknmTests : IDisposable
             }
             case AktStruct s:
             {
-                var other = Assert.IsType<AktStruct>(actual);
+                var other = Assert.IsAssignableFrom<AktStruct>(actual);
                 Assert.Equal(s.TypeName, other.TypeName); // the polymorphic concrete type too
                 Assert.Equal(s.Fields.Count, other.Fields.Count);
                 for (int i = 0; i < s.Fields.Count; i++)
@@ -344,9 +344,9 @@ public sealed class AknmTests : IDisposable
                 }
                 break;
             }
-            case List<object?> list:
+            case IList<object?> list when list is not object[]: // a plain or a packed key list
             {
-                var other = Assert.IsType<List<object?>>(actual);
+                var other = Assert.IsAssignableFrom<IList<object?>>(actual);
                 Assert.Equal(list.Count, other.Count);
                 for (int i = 0; i < list.Count; i++) AssertSameValue(list[i], other[i]);
                 break;

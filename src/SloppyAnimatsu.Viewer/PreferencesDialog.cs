@@ -15,12 +15,14 @@ namespace SloppyAnimatsu.Viewer;
 /// the combo boxes with their option names, text fields and the one hyperlink. Which rows a
 /// page has, what it draws and when they are written into the document is
 /// <see cref="PreferencesSession"/> and <see cref="PreferenceLayout"/>; this window only draws that and
-/// types into it.
+/// types into it. Every change is written and saved as it is made - a check box or list at once, a text
+/// box when Enter is pressed in it or focus leaves it. Restore defaults resets the visible page. Ctrl+Z
+/// undoes and Ctrl+Y / Ctrl+Shift+Z redo; the history is the main window's, so it survives closing.
 /// </summary>
 public sealed class PreferencesDialog : Window
 {
     private readonly PreferencesSession _session;
-    private readonly Action<bool> _saved;
+    private readonly Action<string, bool> _changed;
     private readonly ListBox _pageList = new() { Width = 260 };
     private readonly StackPanel _rows = new() { Spacing = 6 };
     private readonly ScrollViewer _scroll = new()
@@ -29,17 +31,21 @@ public sealed class PreferencesDialog : Window
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
     };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8, FontSize = 12 };
-    private readonly Button _save = new() { Content = "Save" };
-    private readonly Button _cancel = new() { Content = "Cancel" };
+    private readonly Button _defaults = new() { Content = "Restore defaults" };
     private readonly List<(PreferenceRow Row, Control Control, Func<string?> Text)> _editors = [];
     private readonly DialogChrome _chrome;
     private bool _switching;
+    // Set while the window rewrites a widget itself, so the change is not taken as an edit.
+    private bool _refreshing;
+    // The text box holding typed text that is not applied yet: Ctrl+Z there undoes the typing.
+    private TextBox? _editingBox;
 
     private PreferencesDialog(
-        Preferences preferences, Action<bool> saved, string? startClass, int? sceneFrameRate, Scene? scene)
+        Preferences preferences, PreferenceHistory history, Action<string, bool> changed, string? startClass,
+        int? sceneFrameRate, Scene? scene)
     {
-        _session = new PreferencesSession(preferences, sceneFrameRate, scene);
-        _saved = saved;
+        _session = new PreferencesSession(preferences, sceneFrameRate, scene, history);
+        _changed = changed;
         Title = "Preferences";
         Width = 900;
         Height = 660;
@@ -50,8 +56,9 @@ public sealed class PreferencesDialog : Window
         _pageList.ItemsSource = _session.Entries.Select(entry => entry.Title).ToList();
         _pageList.SelectionChanged += (_, _) => { if (!_switching) SwitchPage(_pageList.SelectedIndex); };
 
-        _save.Click += (_, _) => SaveAndClose();
-        _cancel.Click += (_, _) => { _session.Restore(); Close(); };
+        _defaults.Click += (_, _) => RestoreDefaults();
+        ToolTip.SetTip(_defaults, "Puts every value of this page back to its default (undoable).");
+        AddHandler(KeyDownEvent, OnUndoKeys, Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
         var header = new TextBlock
         {
@@ -74,8 +81,7 @@ public sealed class PreferencesDialog : Window
         Grid.SetColumn(_status, 0);
         footer.Children.Add(_status);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        buttons.Children.Add(_save);
-        buttons.Children.Add(_cancel);
+        buttons.Children.Add(_defaults);
         Grid.SetColumn(buttons, 1);
         footer.Children.Add(buttons);
 
@@ -89,13 +95,6 @@ public sealed class PreferencesDialog : Window
         Grid.SetRow(header, 0);
         Grid.SetRow(body, 1);
         Grid.SetRow(footer, 2);
-
-        // Closing any other way (the title bar's X, Escape through Cancel) behaves like Cancel:
-        // the values captured when the dialog opened are put back. Only Save keeps the edits.
-        Closing += (_, _) =>
-        {
-            if (!_session.SavedOnClose) _session.Restore();
-        };
 
         _status.Text = _session.Status;
         _chrome = new DialogChrome(this, DialogId.Preferences);
@@ -113,23 +112,20 @@ public sealed class PreferencesDialog : Window
     /// <summary>
     /// Shows the dialog and waits for it to close, on the row that shows <paramref name="startClass"/>.
     /// <paramref name="sceneFrameRate"/> is the open scene's rate for Timebar's *Scene Frame Rate* row,
-    /// and <paramref name="scene"/> its values for the scene-backed rows; <paramref name="saved"/>
-    /// is told whether a scene-backed row was written, so the window can mark the document dirty.
+    /// and <paramref name="scene"/> its values for the scene-backed rows. <paramref name="history"/> is
+    /// the undo history, kept by the caller across openings. <paramref name="changed"/>
+    /// is called after every change, undo and redo with a status line and whether a scene-backed row
+    /// was written, so the window applies the values at once and can mark the document dirty.
     /// </summary>
     public static Task ShowFor(
-        Window owner, Preferences preferences, Action<bool> saved, string? startClass = null,
-        int? sceneFrameRate = null, Scene? scene = null) =>
-        new PreferencesDialog(preferences, saved, startClass, sceneFrameRate, scene).ShowDialog(owner);
-
-    /// <summary>The edits the visible page sends: only the rows whose text changed (see <see cref="PreferencesSession.Changed"/>).</summary>
-    private List<PreferenceEdit> Editors() =>
-        _session.Entries.Count == 0
-            ? []
-            : PreferencesSession.Changed(_editors.Select(editor => (editor.Row, editor.Text()))).ToList();
+        Window owner, Preferences preferences, PreferenceHistory history, Action<string, bool> changed,
+        string? startClass = null, int? sceneFrameRate = null, Scene? scene = null) =>
+        new PreferencesDialog(preferences, history, changed, startClass, sceneFrameRate, scene).ShowDialog(owner);
 
     private void SwitchPage(int index)
     {
-        switch (_session.SelectPage(index, Editors()))
+        // Every value is already written as it changes, so a page switch has nothing to commit.
+        switch (_session.SelectPage(index, []))
         {
             case PreferencePageChange.Moved:
                 ShowPage(_session.Page);
@@ -144,13 +140,12 @@ public sealed class PreferencesDialog : Window
         }
     }
 
-    /// <summary>The tab order of the controls now on screen: the page list, the page's widgets, then Save and Cancel.</summary>
+    /// <summary>The tab order of the controls now on screen: the page list, the page's widgets, then the buttons.</summary>
     private void BindChrome()
     {
         var controls = new List<(DialogStop, Control)> { (DialogStop.PageList, _pageList) };
         controls.AddRange(_editors.Select(editor => (DialogStop.PageValue, editor.Control)));
-        controls.Add((DialogStop.PageSave, _save));
-        controls.Add((DialogStop.PageCancel, _cancel));
+        controls.Add((DialogStop.PageDefaults, _defaults));
         _chrome.Bind(controls.ToArray());
     }
 
@@ -191,6 +186,7 @@ public sealed class PreferencesDialog : Window
             grid.Children.Add(label);
 
             var editor = Editor(preferenceRow);
+            Watch(preferenceRow, editor.Control, editor.Text);
             Grid.SetRow(editor.Control, row);
             Grid.SetColumn(editor.Control, 1);
             grid.Children.Add(editor.Control);
@@ -207,8 +203,8 @@ public sealed class PreferencesDialog : Window
         foreach (var (dependent, box) in dependents)
         {
             if (!boxes.TryGetValue(dependent.EnabledBy!, out var source)) continue;
-            box.IsEnabled = source.IsChecked == true;
-            source.IsCheckedChanged += (_, _) => box.IsEnabled = source.IsChecked == true;
+            DisabledHint.SetEnabled(box, source.IsChecked == true, $"\"{source.Content}\" ticked");
+            source.IsCheckedChanged += (_, _) => DisabledHint.SetEnabled(box, source.IsChecked == true, $"\"{source.Content}\" ticked");
         }
 
         _rows.Children.Add(grid);
@@ -321,14 +317,103 @@ public sealed class PreferencesDialog : Window
         return Color.FromArgb(255, 80, 80, 80);
     }
 
-    private void SaveAndClose()
+    /// <summary>Sends a widget's changes to the session: a choice at once, typed text on Enter or focus loss.</summary>
+    private void Watch(PreferenceRow row, Control control, Func<string?> text)
     {
-        if (!_session.TrySave(Editors()))
+        if (!row.Editable) return;
+        switch (control)
         {
+            case CheckBox check:
+                check.IsCheckedChanged += (_, _) => Edited(row, text());
+                break;
+            case ComboBox combo:
+                combo.SelectionChanged += (_, _) => Edited(row, text());
+                break;
+            default:
+                var box = control as TextBox ?? (control as Panel)?.Children.OfType<TextBox>().FirstOrDefault();
+                if (box is null || box.IsReadOnly) return;
+                box.TextChanged += (_, _) =>
+                {
+                    if (!_refreshing) _editingBox = row.IsUnchanged(text()) ? null : box;
+                };
+                box.LostFocus += (_, _) => Apply(row, box, text);
+                box.AddHandler(KeyDownEvent, (_, e) =>
+                {
+                    if (e.Key == Avalonia.Input.Key.Enter) { Apply(row, box, text); e.Handled = true; }
+                }, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
+                break;
+        }
+    }
+
+    private void Edited(PreferenceRow row, string? text)
+    {
+        if (_refreshing) return;
+        var step = _session.Edit(row, text);
+        _status.Text = _session.Status;
+        if (step != null) Changed(step.Label, step);
+    }
+
+    /// <summary>
+    /// Applies a text box's typed value. A value that does not parse is reported and the box shows
+    /// the stored value again.
+    /// </summary>
+    private void Apply(PreferenceRow row, TextBox box, Func<string?> text)
+    {
+        if (_refreshing) return;
+        if (ReferenceEquals(_editingBox, box)) _editingBox = null;
+        if (!row.IsUnchanged(text()))
+        {
+            var step = _session.Edit(row, text());
             _status.Text = _session.Status;
+            if (step != null) Changed(step.Label, step);
+        }
+        _refreshing = true;
+        box.Text = row.Text;
+        _refreshing = false;
+    }
+
+    private void RestoreDefaults()
+    {
+        var step = _session.RestoreDefaults(_session.Page);
+        if (step == null)
+        {
+            _status.Text = _session.Status.Length > 0 ? _session.Status : "This page already holds its default values.";
             return;
         }
-        _saved(_session.SceneEdited);
-        Close();
+        ShowPage(_session.Page);
+        Changed(step.Label, step);
+    }
+
+    private void UndoRedo(bool undo)
+    {
+        var step = undo ? _session.Undo() : _session.Redo();
+        if (step == null)
+        {
+            _status.Text = undo ? "Nothing to undo." : "Nothing to redo.";
+            return;
+        }
+        // The step may belong to another page: show that page with the values put back.
+        _switching = true;
+        _pageList.SelectedIndex = _session.Page;
+        _switching = false;
+        ShowPage(_session.Page);
+        Changed((undo ? "Undid " : "Redid ") + step.Label, step);
+    }
+
+    private void OnUndoKeys(object? sender, Avalonia.Input.KeyEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Control)) return;
+        if (e.Key is not (Avalonia.Input.Key.Z or Avalonia.Input.Key.Y)) return;
+        // Typed text not applied yet is the text box's own to undo.
+        if (_editingBox != null && ReferenceEquals(FocusManager?.GetFocusedElement(), _editingBox)) return;
+        bool shift = e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift);
+        UndoRedo(undo: e.Key == Avalonia.Input.Key.Z && !shift);
+        e.Handled = true;
+    }
+
+    private void Changed(string label, PreferenceStep step)
+    {
+        if (_session.Status.Length == 0) _status.Text = label + ".";
+        _changed(label, step.TouchesScene);
     }
 }

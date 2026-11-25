@@ -259,7 +259,17 @@ public sealed class AktSchema
             switch (t.Kind)
             {
                 case AktTypeKind.Vector:
-                    foreach (var e in (List<object?>)v) VisitValue(t.Element!, e);
+                    if (v is AktPackedList { IsPacked: true } packed)
+                    {
+                        // Every element of a packed list has one concrete type and holds no
+                        // polymorphic values, so its chain is all it adds (no views are built).
+                        if (t.Element!.Kind == AktTypeKind.Polymorphic && packed.Count > 0
+                            && packed.ElementTypeName is { } concrete && concreteSeen.Add(concrete))
+                            foreach (string key in AktNames.PolymorphicChain(AktNames.Key(concrete)))
+                                AddStruct(key);
+                        break;
+                    }
+                    foreach (var e in (IList<object?>)v) VisitValue(t.Element!, e);
                     break;
                 case AktTypeKind.Tuple:
                     foreach (var e in (object?[])v) VisitValue(t.Element!, e);

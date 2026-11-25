@@ -192,7 +192,7 @@ public sealed partial class MainWindow
         IReadOnlyCollection<CurveKeySelection> selection = _curveboard.Selection;
         foreach (Button curveButton in _curveButtons)
         {
-            curveButton.IsEnabled = selection.Count > 0;
+            DisabledHint.SetEnabled(curveButton, selection.Count > 0, "selected keys in the Curveboard");
         }
         if (selection.Count != 1)
         {

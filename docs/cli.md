@@ -91,7 +91,7 @@ are the AutoRigger's hot points (`Pelvis`, `Neck`, `AnkleLeft`, `ShoulderRight`,
 
 | Command | Does |
 |-|-|
-| `fbxexport <file.slopa> <out.fbx> [--baked] [--animation=name]... [--character=name]... [--textures=dir]` | writes the scene as binary FBX 7400: models, geometry, skins, bind poses, materials with embedded textures, and the animations either from the stacks' own keys or baked one key per frame |
+| `fbxexport <file.slopa> <out.fbx> [--preset=default\|unity\|godot\|blender\|plain] [--baked] [--animation=name]... [--character=name]... [--textures=dir]` | writes the scene as binary FBX 7400: models, geometry, skins, bind poses, materials with embedded textures, and the animations either as fitted keys or baked one key per frame. The default preset writes one file that Blender, Unity and Godot all import (linear keys); `unity`/`godot` write curved keys, `plain` the scene's own keys without engine fixes |
 | `fbximport <file.fbx> <out.slopa> [--no-animations] [--no-skins] [--no-materials] [--textures=dir]` | reads an FBX into a new scene: characters and joints, meshes, skin weights and bind poses, materials and textures, one animation per FBX stack |
 | `aknmexport <file.slopa> <out.aknm> [--character=name] [--animation=name]... [--all-animations]` | writes a character's rig and selected animations as an `.aknm` |
 | `aknmimport <scene.slopa> <file.aknm> <out.slopa> [--character=name] [--root] [--force]` | copies an `.aknm`'s animations onto a character, pairing controllers by name |

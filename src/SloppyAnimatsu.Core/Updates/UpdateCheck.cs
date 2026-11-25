@@ -185,6 +185,17 @@ public static class UpdateCheck
         return false;
     }
 
+    /// <summary>
+    /// A file a local developer release (packaging\release.ps1) carries in its folder: the
+    /// updater never replaces such a folder with an official release, and the setup refuses
+    /// to install into it.
+    /// </summary>
+    public const string DevelopmentBuildMarker = "DEV_BUILD.txt";
+
+    /// <summary>True for a build tree or a folder marked with <see cref="DevelopmentBuildMarker"/>.</summary>
+    public static bool IsDevelopmentFolder(string folder) =>
+        IsBuildTree(folder) || File.Exists(Path.Combine(folder, DevelopmentBuildMarker));
+
     /// <summary>The hash a <c>SHA256SUMS</c> file lists for <paramref name="fileName"/> (lower-case hex), or null.</summary>
     public static string? ChecksumFor(string sums, string fileName)
     {

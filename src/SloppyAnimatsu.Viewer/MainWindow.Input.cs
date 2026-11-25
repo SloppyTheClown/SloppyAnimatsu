@@ -262,6 +262,12 @@ public sealed partial class MainWindow
             case "StackerCreateKey":
                 CreateKey();
                 return true;
+            case "StackerTogglePreviousGhosts":
+                ToggleGhosts(next: false);
+                return true;
+            case "StackerToggleNextGhosts":
+                ToggleGhosts(next: true);
+                return true;
             case "DeleteObject":
                 DeleteKeys(closeGaps: false);
                 return true;
@@ -424,20 +430,30 @@ public sealed partial class MainWindow
         ScenePose pose = _pose;
         renderer.Selected = selected;
         renderer.AlsoSelected = _selectedAll.Take(_selectedAll.Count - 1).ToArray();
-        if (selected is Character placed && pose != null && !InPaintAndCheck)
+        if (pose != null && IsPlacedObject(selected))
         {
-            // A character's own transform is its placement in the scene (PlacementDrag).
-            gizmo.Visible = true;
+            // An object that is not a controller (a character, a mesh, a group): its own transform
+            // is its placement in the scene (PlacementDrag), the same at every frame. It moves and
+            // turns in both contexts and scales in Rigging; Paint & Check shows it read-only.
+            Object3D placed = selected!;
+            bool editable = !InPaintAndCheck;
+            bool scalable = editable && _animation == null;
+            gizmo.Visible = editable;
             gizmo.Frame = placed.WorldMatrix;
             gizmo.ParentFrame = placed.Parent3D?.WorldMatrix ?? Matrix4x4.Identity;
             gizmo.CanTranslate = true;
-            gizmo.CanScale = false;
+            gizmo.CanScale = scalable;
             SyncSpinnerDial();
-            ShowSpinner(null, null, restEditable: false);
+            ShowSpinner(SloppyAnimatsu.Core.Model.Transform.FromMatrixLoose(placed.LocalMatrix), null, restEditable: editable, forceSpinner, scaleEditable: scalable);
+            _fovField.Show(null, enabled: false, forceSpinner);
             ShowExtraFields(selected, null, null, null, forceSpinner);
             SyncFreezeButton();
-            _spaceText.Text = "Scene";
-            _selection.Text = $"{placed.Name}: drag the gizmo to move or turn the whole character (not animated).";
+            _spaceText.Text = "Parent";
+            _selection.Text = !editable
+                ? $"{placed.Name} ({placed.ClassName}): Paint & Check poses controllers only."
+                : scalable
+                    ? $"{placed.Name} ({placed.ClassName}): drag the gizmo or type a value to move, turn or scale it with everything below it (not animated)."
+                    : $"{placed.Name} ({placed.ClassName}): drag the gizmo or type a value to move or turn it with everything below it (not animated); scale it in the Rigging context.";
             RefreshProperties();
             RefreshMaterial();
             return;
@@ -447,11 +463,12 @@ public sealed partial class MainWindow
         {
             gizmo.Visible = false;
             SyncSpinnerDial();
-            ShowSpinner(null, null, restEditable: false);
+            // Any other selected object still shows its own transform, read-only.
+            ShowSpinner(selected != null ? SloppyAnimatsu.Core.Model.Transform.FromMatrixLoose(selected.LocalMatrix) : null, null, restEditable: false, forceSpinner);
             ShowExtraFields(selected, null, null, null, forceSpinner);
             SyncFreezeButton();
             _spaceText.Text = "Parent";
-            _selection.Text = "Click a joint or controller to select it.";
+            _selection.Text = selected != null ? $"{selected.Name} ({selected.ClassName}) cannot be edited here." : "Click a joint or controller to select it.";
             RefreshProperties();
             RefreshMaterial();
             return;
@@ -585,7 +602,7 @@ public sealed partial class MainWindow
         return $"{F(v.X)} {F(v.Y)} {F(v.Z)}";
     }
 
-    private void ShowSpinner(SloppyAnimatsu.Core.Model.Transform? local, AnimTrack? track, bool restEditable, bool force = false)
+    private void ShowSpinner(SloppyAnimatsu.Core.Model.Transform? local, AnimTrack? track, bool restEditable, bool force = false, bool? scaleEditable = null)
     {
         Vector3 vector = ((!local.HasValue) ? Vector3.Zero : Curves.ToEulerDegrees(local.GetValueOrDefault().Rotation));
         for (int i = 0; i < 3; i++)
@@ -603,7 +620,7 @@ public sealed partial class MainWindow
                 value = null;
             }
             obj.Show(value, Animated(AnimChannels.Rotate), force);
-            _scaleFields[i].Show(local?.Scale[i], Animated((AnimChannels)(1 << 6 + i)), force);
+            _scaleFields[i].Show(local?.Scale[i], scaleEditable ?? Animated((AnimChannels)(1 << 6 + i)), force);
         }
         bool Animated(AnimChannels bit)
         {
@@ -616,6 +633,30 @@ public sealed partial class MainWindow
         if (!_syncing && _drag == null && _pose != null && _character != null)
         {
             PoseEditSession session = Session;
+            if (session != null && IsPlacedObject(_selected))
+            {
+                if (InPaintAndCheck)
+                {
+                    _status.Text = "Paint & Check poses controllers only.";
+                    return 0;
+                }
+                Object3D placed = _selected!;
+                bool set = session.SetPlacementValue(placed, channel, value, allowScale: _animation == null, out string? placeReason);
+                if (set)
+                {
+                    _dirty = true;
+                    UpdateTitle();
+                    AfterKeyChange();
+                    Apply();
+                    _status.Text = $"Set {Curves.ChannelNames[channel]} of {placed.Name}.";
+                }
+                else
+                {
+                    _status.Text = placeReason ?? "The value was not applied.";
+                }
+                UpdateSelection(forceSpinner: true);
+                return set ? 1 : 0;
+            }
             if (session != null)
             {
                 Object3D[] controllers = _selectedAll.Where((Object3D c) => session.Evaluator.IndexOf(c) >= 0).ToArray();

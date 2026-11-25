@@ -86,68 +86,202 @@ public sealed partial class MainWindow
     /// </summary>
     private Control RigWorkshopBody()
     {
-        _rigAtelierButtons.Clear();
-        WrapPanel panel = new WrapPanel { Margin = new Thickness(3.0, 2.0) };
+        // The list also holds the SKIN WORKSHOP's Bind/Unbind buttons; rebuild only the rig ones.
+        _rigAtelierButtons.RemoveAll(b => !IsSkinBindCommand(b.Command));
+        StackPanel panel = new StackPanel { Margin = new Thickness(3.0, 2.0), Spacing = 3.0 };
+        WrapPanel buttons = new WrapPanel();
+        MenuEntry? orient = null;
         foreach (MenuEntry entry in MenuModel.RigItems(CurrentMenuState()))
         {
             if (entry.Command is not { } command || entry.Kind != MenuEntryKind.Item) continue;
-            string text = entry.Header.Replace("_", "").Replace("…", "");
-            int paren = text.IndexOf(" (", StringComparison.Ordinal);
-            Button button = new Button
-            {
-                Content = paren > 0 ? text[..paren] : text,
-                FontSize = 10.0,
-                Padding = new Thickness(5.0, 1.0),
-                Margin = new Thickness(1.0),
-                MinHeight = 0.0
-            };
-            ToolTip.SetTip(button, entry.Header.Replace("_", ""));
-            string? argument = entry.Argument;
-            button.Click += delegate { RunMenuCommand(command, argument); };
-            _rigAtelierButtons.Add((button, command));
-            panel.Children.Add(button);
+            // Orient sits beside the axes it uses (JointAxesRow), not among the other commands.
+            if (command == MenuCommand.OrientJoints) { orient = entry; continue; }
+            buttons.Children.Add(WorkshopButton(entry, command));
         }
+        panel.Children.Add(buttons);
+        panel.Children.Add(JointAxesRow(orient));
         RefreshRigAtelier();
         return panel;
+    }
+
+    /// <summary>A RIG/SKIN WORKSHOP button for a menu row, with the row's hover text.</summary>
+    private Button WorkshopButton(MenuEntry entry, MenuCommand command)
+    {
+        string text = entry.Header.Replace("_", "").Replace("…", "");
+        int paren = text.IndexOf(" (", StringComparison.Ordinal);
+        Button button = new Button
+        {
+            Content = paren > 0 ? text[..paren] : text,
+            FontSize = 10.0,
+            Padding = new Thickness(5.0, 1.0),
+            Margin = new Thickness(1.0),
+            MinHeight = 0.0
+        };
+        string baseTip = entry.ToolTip ?? entry.Header.Replace("_", "");
+        _workshopRequirements[button] = (baseTip, entry.Requires);
+        ToolTip.SetTip(button, entry.Enabled ? baseTip : MenuEntry.WithRequirement(baseTip, entry.Requires));
+        string? argument = entry.Argument;
+        button.Click += delegate { RunMenuCommand(command, argument); };
+        _rigAtelierButtons.Add((button, command));
+        return button;
+    }
+
+    /// <summary>The joint-axis choices of the workshop's combo boxes, in the Joint axes menu's order.</summary>
+    private static readonly (JointAxis Axis, bool Negative)[] JointAxisChoices =
+    [
+        (JointAxis.X, false), (JointAxis.X, true),
+        (JointAxis.Y, false), (JointAxis.Y, true),
+        (JointAxis.Z, false), (JointAxis.Z, true)
+    ];
+
+    private ComboBox? _rigAimAxis, _rigUpAxis;
+    private bool _syncingRigAxes;
+
+    /// <summary>Each workshop button's own hover text and what it needs, to compose the disabled tooltip.</summary>
+    private readonly Dictionary<Button, (string Tip, string? Requires)> _workshopRequirements = new();
+
+    /// <summary>
+    /// The RIG WORKSHOP's joint-axis controls (the same settings as Rig > Joint axes): the Aim axis
+    /// that Orient / Create joint point at the child joint above the 2nd axis that points up, with
+    /// the Orient Joint button beside them. Auto-orient on creation stays in Rig > Joint axes.
+    /// </summary>
+    private Control JointAxesRow(MenuEntry? orient)
+    {
+        _rigAimAxis = AxisCombo(aim: true,
+            "Aim axis: the joint's local axis that Orient selected joints (and Create joint with Auto-orient) " +
+            "points at the child joint, i.e. the axis running along the bone.");
+        _rigUpAxis = AxisCombo(aim: false,
+            "2nd axis: the joint's local axis that Orient keeps pointing up (as close as possible to its previous " +
+            "direction), which fixes the twist around the bone. It must differ from the Aim axis.");
+        // Two rows (Aim above 2nd) with the labels in one column so both combos line up.
+        Grid grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            ColumnSpacing = 4.0,
+            RowSpacing = 2.0,
+            HorizontalAlignment = HorizontalAlignment.Left
+        };
+        Place(Label("Aim"), 0, 0);
+        Place(_rigAimAxis, 0, 1);
+        Place(Label("2nd"), 1, 0);
+        Place(_rigUpAxis, 1, 1);
+        if (orient is { Command: { } command })
+        {
+            Button button = WorkshopButton(orient, command);
+            button.Content = "Orient Joint";
+            button.VerticalAlignment = VerticalAlignment.Stretch;
+            button.VerticalContentAlignment = VerticalAlignment.Center;
+            button.Margin = new Thickness(4.0, 0, 0, 0);
+            Grid.SetRowSpan(button, 2);
+            Place(button, 0, 2);
+        }
+        return grid;
+
+        void Place(Control control, int row, int column)
+        {
+            Grid.SetRow(control, row);
+            Grid.SetColumn(control, column);
+            grid.Children.Add(control);
+        }
+        static TextBlock Label(string text) => new TextBlock
+        {
+            Text = text, FontSize = 10.0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2.0, 0, 0, 0)
+        };
+        ComboBox AxisCombo(bool aim, string tip)
+        {
+            ComboBox combo = new ComboBox { FontSize = 10.0, MinHeight = 0.0, Padding = new Thickness(4.0, 0) };
+            foreach (var (axis, negative) in JointAxisChoices)
+                combo.Items.Add((negative ? "-" : "+") + JointAlignment.NameOf(axis));
+            ToolTip.SetTip(combo, tip);
+            combo.SelectionChanged += delegate
+            {
+                if (_syncingRigAxes || combo.SelectedIndex < 0) return;
+                var (axis, negative) = JointAxisChoices[combo.SelectedIndex];
+                SetJointAxis(aim, axis, negative);
+            };
+            return combo;
+        }
     }
 
     private void RefreshRigAtelier()
     {
         if (_rigAtelierButtons.Count == 0) return;
-        Dictionary<MenuCommand, bool> enabled = new();
-        foreach (MenuEntry entry in MenuModel.RigItems(CurrentMenuState()))
-            if (entry.Command is { } command) enabled[command] = entry.Enabled;
+        MenuState state = CurrentMenuState();
+        // Panels are rebuilt; drop the hover texts of buttons that are gone.
+        foreach (Button stale in _workshopRequirements.Keys.Where(b => !_rigAtelierButtons.Exists(r => r.Button == b)).ToList())
+            _workshopRequirements.Remove(stale);
+        Dictionary<MenuCommand, MenuEntry> entries = new();
+        foreach (MenuEntry entry in MenuModel.RigItems(state).Concat(MenuModel.SkinItems(state)))
+            if (entry.Command is { } command) entries[command] = entry;
         foreach (var (button, command) in _rigAtelierButtons)
-            button.IsEnabled = enabled.TryGetValue(command, out bool on) && on;
+        {
+            entries.TryGetValue(command, out MenuEntry? entry);
+            button.IsEnabled = entry?.Enabled == true;
+            if (_workshopRequirements.TryGetValue(button, out var tip))
+                ToolTip.SetTip(button, button.IsEnabled ? tip.Tip : MenuEntry.WithRequirement(tip.Tip, entry?.Requires ?? tip.Requires));
+        }
+        _syncingRigAxes = true;
+        try
+        {
+            if (_rigAimAxis != null)
+                _rigAimAxis.SelectedIndex = Array.IndexOf(JointAxisChoices, (_jointAlignment.Aim, _jointAlignment.AimNegative));
+            if (_rigUpAxis != null)
+                _rigUpAxis.SelectedIndex = Array.IndexOf(JointAxisChoices, (_jointAlignment.Up, _jointAlignment.UpNegative));
+        }
+        finally
+        {
+            _syncingRigAxes = false;
+        }
     }
+
+    private static bool IsSkinBindCommand(MenuCommand command) =>
+        command is MenuCommand.BindSkin or MenuCommand.UnbindSkin;
 
     private Control SkinWorkshopBody()
     {
+        _rigAtelierButtons.RemoveAll(b => IsSkinBindCommand(b.Command));
+        WrapPanel bind = new WrapPanel();
+        foreach (MenuEntry entry in MenuModel.SkinItems(CurrentMenuState()))
+            if (entry.Command is { } command && entry.Kind == MenuEntryKind.Item)
+                bind.Children.Add(WorkshopButton(entry, command));
         WrapPanel control = new WrapPanel
         {
-            Children = 
+            Children =
             {
-                Command("Set", SetSkinWeight),
+                Command("Set", SetSkinWeight,
+                    "Give the selected control points the weight in the value box for the current joint; the other " +
+                    "joints' weights are scaled so each point still sums to 1. Hidden points and locked joints are not changed."),
                 Command("Prune", delegate
                 {
                     RunSkinEdit("Pruned the weights", (SkinPaintSession s) => s.Prune());
-                }),
+                }, "Remove every tiny influence (below 0.001) from the whole mesh and give its share to the joints " +
+                   "that remain on that point. Hidden control points are left alone."),
                 Command("Fix", delegate
                 {
                     RunSkinEdit("Fixed the selected weights", (SkinPaintSession s) => s.Fix());
-                }),
+                }, "Smooth the selected control points: each takes the average weights of its selected neighbours " +
+                   "(it needs at least two), then is normalized to 1. Use it to blend out sharp seams."),
                 Command("Flood", delegate
                 {
                     RunSkinEdit("Flooded the selection", (SkinPaintSession s) => s.Flood());
-                }),
+                }, "Grow the control-point selection to the whole connected piece of mesh it touches (stopping at " +
+                   "hidden points). Handy for selecting a separate part such as an eye or a button."),
                 Command("Mirror", delegate
                 {
                     RunSkinEdit("Mirrored the skin", (SkinPaintSession s) => s.Mirror());
-                }),
-                Command("Copy", CopySkinWeights),
-                Command("Paste", PasteSkinWeights),
-                Command("Hide", HideSkinVertices),
-                Command("Show all", ShowAllSkinVertices)
+                }, "Copy the current joint's weights to the matching joint on the other side (left to right, " +
+                   "e.g. L_arm to R_arm), on the control points at the mirrored position."),
+                Command("Copy", CopySkinWeights,
+                    "Copy the weights of the selected control points (at least two) so they can be pasted onto other points, even on another mesh."),
+                Command("Paste", PasteSkinWeights,
+                    "Paste the copied weights onto the selected control points, pairing them in point order. Joints are matched by name; " +
+                    "a joint missing on this character takes the target of its nearest matched parent joint."),
+                Command("Hide", HideSkinVertices,
+                    "Hide the selected control points so painting, Prune, Fix and Flood ignore them. " +
+                    "Useful to protect an area while you work next to it."),
+                Command("Show all", ShowAllSkinVertices,
+                    "Show every hidden control point again.")
             }
         };
         Grid header = new Grid
@@ -168,24 +302,25 @@ public sealed partial class MainWindow
         grid.Children.Add(_skinWeights);
         Grid grid2 = new Grid
         {
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,*"),
             Margin = new Thickness(8.0),
             RowSpacing = 3.0
         };
         // No mesh or joint pickers (the SKIN ATELIER has none): the mesh is the skinned mesh
         // the brush or the vertex selection last hit, and the list is the selected joints plus the
         // joints weighting the selected control points.
-        Add(control, 0);
-        Add(_skinInfo, 1);
-        Add(Heading("Weights"), 2);
-        Add(grid, 3);
+        Add(bind, 0);
+        Add(control, 1);
+        Add(_skinInfo, 2);
+        Add(Heading("Weights"), 3);
+        Add(grid, 4);
         return grid2;
         void Add(Control control3, int row)
         {
             Grid.SetRow(control3, row);
             grid2.Children.Add(control3);
         }
-        static Control Command(string text, Action run)
+        static Control Command(string text, Action run, string toolTip)
         {
             Button button = new Button
             {
@@ -193,6 +328,7 @@ public sealed partial class MainWindow
                 Padding = new Thickness(6.0, 2.0),
                 FontSize = 11.0
             };
+            ToolTip.SetTip(button, toolTip);
             button.Click += delegate
             {
                 run();

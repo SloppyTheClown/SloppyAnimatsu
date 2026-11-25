@@ -90,13 +90,113 @@ public class OutlinerDragTests
         Assert.Equal(OutlinerDropVerdict.Character, OutlinerDrag.Verdict(character, other.Object));
         Assert.False(OutlinerDrag.AllowsDrop(character, other.Object));
 
-        // ...and a scene-level mesh belongs to no character, so it may not be dropped on one either.
+        // ...while a scene-level mesh may be dropped into a character (a mesh carries no tracks or slots).
         var mesh = scene.Meshes.FirstOrDefault(m => Outliner.IsListed(m) && OutlinerDrag.OwnerOf(m) == null);
         if (mesh != null)
         {
-            Assert.Equal(OutlinerDropVerdict.OtherCharacter, OutlinerDrag.Verdict(mesh, other.Object));
-            Assert.False(OutlinerDrag.AllowsDrop(mesh, other.Object));
+            Assert.Equal(OutlinerDropVerdict.Move, OutlinerDrag.Verdict(mesh, other.Object));
+            Assert.True(OutlinerDrag.AllowsDrop(mesh, other.Object));
         }
+        // A joint still may not leave its character for the scene root.
+        var joint = character.Joints.FirstOrDefault();
+        if (joint != null) Assert.Equal(OutlinerDropVerdict.SceneRoot, OutlinerDrag.RootVerdict(joint));
+    }
+
+    [SceneTheory, SceneSamples]
+    public void MeshDrag_OutOfTheCharacterUnbindsAndBackInRebinds(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        var scene = model.Scene;
+        var mesh = scene.Meshes.FirstOrDefault(m => m.Skinned && !m.SkinnedMeshIsLocked && OutlinerDrag.OwnerOf(m) != null);
+        if (mesh == null) return;
+        var character = OutlinerDrag.OwnerOf(mesh)!;
+
+        // Beside the character row is the scene root for a mesh (into it for anything else).
+        Assert.Null(OutlinerDrag.DropParent(mesh, character, OutlinerDropPlace.Before));
+        Assert.Same(character, OutlinerDrag.DropParent(mesh, character, OutlinerDropPlace.Inside));
+        Assert.Equal(OutlinerDropVerdict.Move, OutlinerDrag.Verdict(mesh, character, OutlinerDropPlace.After));
+
+        // A locked skin refuses to leave.
+        if (mesh.Source.Has("SkinnedMeshIsLocked"))
+        {
+            mesh.SkinnedMeshIsLocked = true;
+            Assert.Equal(OutlinerDropVerdict.LockedMesh, OutlinerDrag.RootVerdict(mesh));
+            Assert.Throws<InvalidOperationException>(() => SkinEditor.MoveMesh(mesh, null));
+            mesh.SkinnedMeshIsLocked = false;
+        }
+
+        int weightsBefore = mesh.SkinWeights.Count(w => w.Length > 0);
+        var world = mesh.WorldMatrix;
+        Assert.True(SkinEditor.MoveMesh(mesh, null, beside: character, after: true));
+        Assert.False(mesh.Skinned);
+        Assert.Null(OutlinerDrag.OwnerOf(mesh));
+        Assert.Same(scene.Source, mesh.Source.Parent);
+        var rootOrder = scene.Source.Children.ToList();
+        Assert.Equal(rootOrder.IndexOf(character.Source) + 1, rootOrder.IndexOf(mesh.Source));
+        AssertNear(world, mesh.WorldMatrix);
+        // The weights stay with the unbound mesh, as Unbind Skin leaves them.
+        Assert.Equal(weightsBefore, mesh.SkinWeights.Count(w => w.Length > 0));
+
+        // Back into the character: a plain move (nothing to unbind), then Bind Skin attaches it again.
+        Assert.False(SkinEditor.MoveMesh(mesh, character));
+        Assert.Same(character, OutlinerDrag.OwnerOf(mesh));
+        AssertNear(world, mesh.WorldMatrix);
+        new SkinEditor(character).Bind([mesh]);
+        Assert.True(mesh.Skinned);
+        Assert.Equal(weightsBefore, mesh.SkinWeights.Count(w => w.Length > 0));
+
+        // Into a second character, when the scene has one: unbound on the way, owned by it after.
+        var second = scene.Characters.FirstOrDefault(c => !ReferenceEquals(c, character));
+        if (second == null) return;
+        Assert.Equal(OutlinerDropVerdict.Move, OutlinerDrag.Verdict(mesh, second, OutlinerDropPlace.Inside));
+        Assert.True(SkinEditor.MoveMesh(mesh, second));
+        Assert.False(mesh.Skinned);
+        Assert.Same(second, OutlinerDrag.OwnerOf(mesh));
+    }
+
+    [SceneTheory, SceneSamples]
+    public void MeshDrag_IntoANewCharacter_PlainAktSaveDropsTheOldWeightsAndTheContainerKeepsThem(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        var scene = model.Scene;
+        var mesh = scene.Meshes.FirstOrDefault(m => m.Skinned && !m.SkinnedMeshIsLocked && OutlinerDrag.OwnerOf(m) != null);
+        if (mesh == null) return;
+        var owner = OutlinerDrag.OwnerOf(mesh)!;
+
+        // A fresh character has no joints, so weights for the old rig index nothing there.
+        var fresh = CharacterBank.CreateCharacter(model);
+        Assert.True(SkinEditor.MoveMesh(mesh, fresh));
+        Assert.False(mesh.Skinned);
+        int index = model.Document.Objects().IndexOf(mesh.Source);
+
+        static int Count(SloppyAnimatsu.Core.Akt.AktObject o, string member) =>
+            o[member] is ICollection<object?> c ? c.Count : 0;
+        int before = Count(mesh.Source, "SkinWeightArray");
+        Assert.True(before > 0);
+
+        var plain = SloppyAnimatsu.Core.Akt.AktReader.Read(model.Document.Write(SloppyAnimatsu.Core.Akt.AktFileFormat.Akeytsu));
+        var plainMesh = plain.Objects()[index];
+        Assert.Equal(0, Count(plainMesh, "SkinWeightArray"));
+        Assert.Equal(0, Count(plainMesh, "RigidSkinWeightArray"));
+
+        var container = SloppyAnimatsu.Core.Akt.AktReader.Read(model.Document.Write(SloppyAnimatsu.Core.Akt.AktFileFormat.SloppyAnimatsu));
+        Assert.Equal(before, Count(container.Objects()[index], "SkinWeightArray"));
+        // The model itself still has them, so Bind Skin can carry them across later.
+        Assert.Equal(before, Count(mesh.Source, "SkinWeightArray"));
+
+        // Moved back into its own character the mesh keeps its weights in the plain file too.
+        SkinEditor.MoveMesh(mesh, owner);
+        var back = SloppyAnimatsu.Core.Akt.AktReader.Read(model.Document.Write(SloppyAnimatsu.Core.Akt.AktFileFormat.Akeytsu));
+        Assert.Equal(before, Count(back.Objects()[model.Document.Objects().IndexOf(mesh.Source)], "SkinWeightArray"));
+    }
+
+    private static void AssertNear(Matrix4x4 expected, Matrix4x4 actual)
+    {
+        float scale = Math.Max(1f, Math.Abs(expected.M41) + Math.Abs(expected.M42) + Math.Abs(expected.M43));
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++)
+                Assert.True(Math.Abs(expected[r, c] - actual[r, c]) <= 1e-3f * scale,
+                    $"[{r},{c}] expected {expected[r, c]} got {actual[r, c]}");
     }
 
     [SceneTheory, SceneSamples]

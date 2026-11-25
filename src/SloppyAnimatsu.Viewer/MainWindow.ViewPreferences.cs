@@ -75,7 +75,15 @@ public sealed partial class MainWindow
             if (_hudHidden) { SetHudHidden(false); return; }
             _viewPrefsFlyout.ShowAt(button);
         };
-        foreach (var box in new[] { _vpWireframe, _vpTextured, _vpLit, _vpJoints, _vpHideBones, _vpPivots, _vpSkinning, _vpBlendFaces })
+        foreach (var box in new[] { _vpWireframe, _vpTextured, _vpLit, _vpJoints, _vpHideBones, _vpPivots })
+            box.IsCheckedChanged += (_, _) =>
+            {
+                if (_syncingViewDisplay) return;
+                StoreFocusedViewDisplay();
+                Apply();
+            };
+        // Skinning and the blendshape faces stay shared by every view.
+        foreach (var box in new[] { _vpSkinning, _vpBlendFaces })
             box.IsCheckedChanged += (_, _) => Apply();
         // "Display grid" is the same switch as the G shortcut and the Grid box of the display options.
         _vpGrid.IsChecked = _showGrid.IsChecked;
@@ -172,7 +180,63 @@ public sealed partial class MainWindow
         renderer.ShowJoints = _vpJoints.IsChecked == true;
         renderer.ShowBones = _vpHideBones.IsChecked != true;
         renderer.ShowPivots = _vpPivots.IsChecked == true;
-        if (_pose != null) _pose.SkinDisplayJoint = skinning ? _selected : null;
+        // Decorators page: the blendshape zone and skinning alphas, Light/Classic joint sizes.
+        renderer.ZoneAlpha = _preferences?.BlendshapeZoneAlpha ?? 0.5f;
+        if (!DecoratorsPerView)
+            foreach (var state in _viewStates) state.Display = null;
+        _lastViewDisplay = CheckboxDisplay();
+        if (_pose != null)
+        {
+            _pose.SkinDisplayJoint = skinning ? _selected : null;
+            _pose.SkinTintAlpha = _preferences?.SkinDecoratorAlpha ?? 0.5f;
+            _pose.AdaptiveJointSizes = (_preferences?.JointDisplayMode ?? JointDisplayMode.Light) == JointDisplayMode.Light;
+        }
+    }
+
+    /// <summary>Set while the switches are loaded from a view, so loading them changes no view.</summary>
+    private bool _syncingViewDisplay;
+
+    /// <summary>The switches as the last <see cref="ApplyViewPrefs"/> applied them.</summary>
+    private ViewDisplay? _lastViewDisplay;
+
+    /// <summary>Each view keeps its own shading/decorator switches ("Decorator display affects all views" off).</summary>
+    private bool DecoratorsPerView => _preferences is { } preferences && !preferences.DecoratorsAffectAllViews;
+
+    private ViewDisplay CheckboxDisplay() => new(
+        _vpWireframe.IsChecked == true, _vpTextured.IsChecked == true, _vpLit.IsChecked == true,
+        _vpJoints.IsChecked == true, _vpHideBones.IsChecked != true, _vpPivots.IsChecked == true);
+
+    /// <summary>
+    /// A switch changed: with per-view display it belongs to the focused view alone, so the other
+    /// views first keep what they showed before the change.
+    /// </summary>
+    private void StoreFocusedViewDisplay()
+    {
+        if (!DecoratorsPerView) return;
+        for (int i = 0; i < _viewStates.Count; i++)
+        {
+            if (i == _focusedView) _viewStates[i].Display = CheckboxDisplay();
+            else _viewStates[i].Display ??= _lastViewDisplay ?? CheckboxDisplay();
+        }
+    }
+
+    /// <summary>The focus moved to another view: the switches show that view's own display.</summary>
+    private void LoadFocusedViewDisplay()
+    {
+        if (!DecoratorsPerView || _focusedView < 0 || _focusedView >= _viewStates.Count) return;
+        if (_viewStates[_focusedView].Display is not { } display) return;
+        _syncingViewDisplay = true;
+        try
+        {
+            _vpWireframe.IsChecked = display.Wireframe;
+            _vpTextured.IsChecked = display.Textured;
+            _vpLit.IsChecked = display.Lit;
+            _vpJoints.IsChecked = display.ShowJoints;
+            _vpHideBones.IsChecked = !display.ShowBones;
+            _vpPivots.IsChecked = display.ShowPivots;
+        }
+        finally { _syncingViewDisplay = false; }
+        Apply();
     }
 
     /// <summary>After the pose update: the blendshape face zones' outlines, when they are shown.</summary>

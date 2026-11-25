@@ -63,7 +63,8 @@ public static class SceneFactory
         var schema = SceneSchema.Create();
         var scene = schema.NewObject("class CScene");
         scene.Set("Name", SceneName);
-        scene.Set("InterfaceContextIndex", (byte)0);
+        // A new scene opens in the Animation context (1), as akeytsu's own new scenes do.
+        scene.Set("InterfaceContextIndex", (byte)1);
         scene.Set("FrameRate", frameRate);
         scene.Set("FrameRateIndex", 0);
         scene.Set("SizeUnit", 3);

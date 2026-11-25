@@ -298,8 +298,14 @@ public static class PreferenceCatalogue
             new("Audio playback scrub length", "AudioScrubDuration", "CTimelinePreferences",
                 PreferenceRowWidget.Number, null, 0),
         ]),
-        new Entry("Transform preferences", ["CTransformPreferences"],
+        new Entry("Transform preferences", ["CTransformPreferences", Preferences.TransformPageClass],
         [
+            // SloppyAnimatsu's own row (CMyAkTransformPreferences): the TRANSFORM window's
+            // translation unit. Scene units are centimetres; metres divide them by 100.
+            new("Translation unit", Preferences.TranslationUnitMember, Preferences.TransformPageClass,
+                PreferenceRowWidget.Combo,
+                [new("Centimeters (default)", (int)TranslationUnit.SceneUnits),
+                 new("Meters (scene units / 100)", (int)TranslationUnit.Meters)]),
             new("Copy/Paste IK target color", "CopyPasteIKColor", "CTransformPreferences",
                 PreferenceRowWidget.Check),
             new("Mirror IK target color", "MirrorIKColor", "CTransformPreferences", PreferenceRowWidget.Check),
@@ -357,6 +363,18 @@ public static class PreferenceCatalogue
     };
 
     /// <summary>
+    /// Page classes the dialog never lists. <c>CDataProtectionPreferences</c> holds analytics and
+    /// crash-report consent boxes; SloppyAnimatsu collects and sends no data at all, so showing the page
+    /// would wrongly suggest it does. Its values stay in the file untouched (and are still written back
+    /// for akeytsu); the curated rows are kept so the page can come back by dropping it from this set.
+    /// </summary>
+    public static IReadOnlySet<string> HiddenClasses { get; } =
+        new HashSet<string>(StringComparer.Ordinal) { "CDataProtectionPreferences" };
+
+    /// <summary>True for a page class the dialog leaves out (<see cref="HiddenClasses"/>).</summary>
+    public static bool IsHidden(string className) => HiddenClasses.Contains(className);
+
+    /// <summary>
     /// The rows the dialog shows for a file: the curated entries whose classes the file has, in the
     /// catalogue order, then a row for every page the catalogue does not cover, so no value of the
     /// file becomes unreachable. An entry keeps its curated rows when one of its classes is missing.
@@ -364,7 +382,8 @@ public static class PreferenceCatalogue
     public static IReadOnlyList<Entry> For(Preferences preferences)
     {
         var present = new List<string>();
-        foreach (var page in preferences.Pages) present.Add(page.ClassName);
+        foreach (var page in preferences.Pages)
+            if (!IsHidden(page.ClassName)) present.Add(page.ClassName);
 
         var entries = new List<Entry>();
         foreach (var entry in Curated.Concat(Own))

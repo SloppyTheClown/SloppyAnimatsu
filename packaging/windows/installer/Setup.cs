@@ -129,10 +129,15 @@ namespace SloppyAnimatsuSetup
     internal static class Installer
     {
         private static readonly string[] Programs = { "SloppyAnimatsu.Viewer", "SloppyAnimatsu.Cli" };
+        // Same name as UpdateCheck.DevelopmentBuildMarker in SloppyAnimatsu.Core.
+        private const string DevelopmentBuildMarker = "DEV_BUILD.txt";
 
         internal static void Install(string target, bool startMenu, bool desktop, Action<int, string> progress)
         {
             if (progress == null) progress = delegate { };
+            // A local developer release (packaging\release.ps1 writes this marker) is never overwritten.
+            if (File.Exists(Path.Combine(target, DevelopmentBuildMarker)))
+                throw new InvalidOperationException(target + " holds a development build (" + DevelopmentBuildMarker + "). Choose another folder.");
             EnsureNotRunning(target);
 
             // A previous install somewhere else is moved, not duplicated: its program files go.

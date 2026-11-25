@@ -109,7 +109,7 @@ public sealed partial class MainWindow
                     Animation animation = value as Animation;
                     if (animation != _animation)
                     {
-                        SelectAnimation((await LeaveRestPose()) ? animation : _animation, null, keepContext: true);
+                        SelectAnimation((await LeaveRestPose()) ? animation : _animation, null);
                     }
                 }
             }
@@ -165,6 +165,7 @@ public sealed partial class MainWindow
             _ = DeleteTreeObject();
         };
         _outliner.ReparentRequested += ReparentFromOutliner;
+        _outliner.SceneRootDropRequested += dragged => MoveMeshFromOutliner(dragged, null, OutlinerDropPlace.Inside);
         // The Rename Tool works on the selection of the panel used last (the last activated
         // window), so remember which of the two naming panels that was.
         _outliner.AddHandler(InputElement.PointerPressedEvent, delegate { _renameFromBank = false; }, RoutingStrategies.Tunnel, handledEventsToo: true);
@@ -227,38 +228,27 @@ public sealed partial class MainWindow
                 {
                     Session?.SetCurrentStack(activeStack);
                 }
+                // A row picked on the timeline becomes the Mixer's selection too, unless it is
+                // already part of a multi-row selection made in the Mixer.
+                if (animation != null && !_syncing && !animation.SelectedStacks.Contains(activeStack))
+                {
+                    animation.SelectStacks([activeStack]);
+                    RefreshMixer();
+                }
             }
             UpdateKeyCommands();
         };
-        _stackEnabled.IsCheckedChanged += delegate
+        _stackBlend.SelectionChanged += delegate
         {
-            ToggleStackFlag(_stackEnabled, 2u);
-        };
-        _stackCycle.IsCheckedChanged += delegate
-        {
-            ToggleStackFlag(_stackCycle, 1u);
-        };
-        _stackAdditive.IsCheckedChanged += delegate
-        {
-            ToggleStackFlag(_stackAdditive, 8u);
-        };
-        _stackOpacity.ValueChanged += delegate
-        {
-            if (!_syncing)
+            if (_syncing || _stackBlend.SelectedIndex < 0) return;
+            AnimStack stack = _timeline.ActiveStack;
+            bool additive = _stackBlend.SelectedIndex == 1;
+            if (stack != null && stack.IsAdditive != additive)
             {
-                decimal? value = _stackOpacity.Value;
-                if (value.HasValue)
+                RunBankEdit(delegate(PoseEditSession session)
                 {
-                    decimal v = value.GetValueOrDefault();
-                    AnimStack stack = _timeline.ActiveStack;
-                    if (stack != null && MathF.Abs((float)v / 100f - stack.Opacity) > 0.0001f)
-                    {
-                        RunBankEdit(delegate(PoseEditSession session)
-                        {
-                            session.SetStackOpacity(stack, (float)v / 100f);
-                        });
-                    }
-                }
+                    session.SetStackAdditive(stack, additive);
+                });
             }
         };
         // Ctrl/Shift+click select several rows; SelectedItem (the first selected) stays the
@@ -584,6 +574,7 @@ public sealed partial class MainWindow
         };
         _viewport.FrameCaptured += delegate(byte[] pixels, int w, int h)
         {
+            MemoryLog.Step("frame captured");
             Dispatcher.UIThread.Post(delegate
             {
                 SaveScreenshot(pixels, w, h);
@@ -596,7 +587,9 @@ public sealed partial class MainWindow
             {
                 if (view >= 0 && view < _viewStates.Count)
                 {
+                    bool changed = view != _focusedView;
                     _focusedView = view;
+                    if (changed) LoadFocusedViewDisplay();
                     RefreshMenu();
                     UpdateAxisCubes();
                     _status.Text = $"Focused view {view + 1}: {ViewDescription(_viewStates[view])}";

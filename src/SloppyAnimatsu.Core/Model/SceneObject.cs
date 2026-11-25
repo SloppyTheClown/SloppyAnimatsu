@@ -100,8 +100,14 @@ internal static class SceneValues
     };
 
     public static uint[] UInts(AktFieldContainer c, string field) =>
-        c[field] is List<object?> list ? list.Select(v => Convert.ToUInt32(v)).ToArray() : [];
+        c[field] is IList<object?> list ? list.Select(v => Convert.ToUInt32(v)).ToArray() : [];
 
-    public static List<object?> Items(AktFieldContainer c, string field) =>
-        c[field] as List<object?> ?? [];
+    /// <summary>The elements of vector <paramref name="field"/> (a packed key list included), or an empty list.</summary>
+    public static IList<object?> Items(AktFieldContainer c, string field) =>
+        c[field] switch
+        {
+            List<object?> list => list,
+            AktPackedList packed => packed,
+            _ => new List<object?>(),
+        };
 }

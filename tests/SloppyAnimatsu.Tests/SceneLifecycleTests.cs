@@ -18,7 +18,7 @@ public class SceneLifecycleTests
 
         Assert.Equal("Scene", scene.Name);
         Assert.Equal(60u, scene.FrameRate);
-        Assert.Equal(0, scene.InterfaceContextIndex);
+        Assert.Equal(1, scene.InterfaceContextIndex); // a new scene opens in the Animation context
         Assert.Equal(8, scene.Cameras.Count);
         Assert.Equal(
             ["Perspective", "Front", "Back", "Right", "Left", "Top", "Bottom", "Photo"],
@@ -98,6 +98,10 @@ public class SceneLifecycleTests
         Assert.Equal(6f, ours.Root.Get<float>("JointRenderSizeHighDensity"));
         ours.Root.Set("JointRenderSize", reference.Root.Get<float>("JointRenderSize"));
         ours.Root.Set("JointRenderSizeHighDensity", reference.Root.Get<float>("JointRenderSizeHighDensity"));
+        // The reference is a live autosave: its context is whichever one the user was in when it was
+        // written (seen as both 0 and 1). Ours always opens in Animation, checked in NewScene_HasTheExpectedObjects.
+        Assert.Equal((byte)1, ours.Root.Get<byte>("InterfaceContextIndex"));
+        ours.Root.Set("InterfaceContextIndex", reference.Root.Get<byte>("InterfaceContextIndex"));
         foreach (var doc in new[] { reference, ours }) NormalizeUninitialized(doc);
 
         Assert.Equal(AktWriter.Write(reference), AktWriter.Write(ours));

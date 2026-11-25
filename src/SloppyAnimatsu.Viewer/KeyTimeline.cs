@@ -51,6 +51,9 @@ public sealed class KeyTimeline : Control
     private static readonly IPen FadePen = new Pen(new SolidColorBrush(Color.FromRgb(0x70, 0xd0, 0x90)));
     private static readonly IPen TickPen = new Pen(new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60)));
     private static readonly IPen KeyOutline = new Pen(Brushes.Black);
+    // The frame distances between keys: light grey, quieter than the key numbers but readable on every row colour.
+    private static readonly IBrush GapMarkBrush = new SolidColorBrush(Color.FromRgb(0xa8, 0xa8, 0xa8));
+    private static readonly IPen GapMarkPen = new Pen(GapMarkBrush, 1);
     private static readonly IBrush KeyNumberBrush = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a));
     private static readonly IBrush LoopKeyBrush = new SolidColorBrush(Color.FromRgb(0x8c, 0xc8, 0xe8));
     private static readonly IBrush CursorBrush = new SolidColorBrush(Color.FromRgb(0xe0, 0x40, 0x40));
@@ -461,6 +464,22 @@ public sealed class KeyTimeline : Control
                 // Only the considered keys are drawn: a non-cycle stack's last stored key is an end
                 // marker; audio events are all drawn.
                 int drawn = stack is AudioStack ? keys.Count : Math.Min(keys.Count, stack.ConsideredKeyCount);
+                // The frame distance between neighbouring keys. While this row's keys are being dragged
+                // it measures where they would land, so the numbers follow the drag.
+                if (stack is not AudioStack && drawn > 1)
+                {
+                    bool moving = active && (ripple >= 0 || (_gesture == Gesture.KeyDrag && _dragDelta != 0));
+                    var marks = new (float Time, int Key)[drawn];
+                    for (int k = 0; k < drawn; k++)
+                    {
+                        bool shifted = moving && (ripple >= 0 ? k >= ripple : _selected.Contains(k));
+                        marks[k] = (keys[k].Time + (shifted ? _dragDelta : 0), k);
+                    }
+                    if (moving) Array.Sort(marks, (a, b) => a.Time != b.Time ? a.Time.CompareTo(b.Time) : a.Key.CompareTo(b.Key));
+                    for (int i = 0; i + 1 < drawn; i++)
+                        DrawGapMark(context, marks[i].Time, Layout.KeyWidth(stack, drawn, marks[i].Key),
+                            marks[i + 1].Time, Layout.KeyWidth(stack, drawn, marks[i + 1].Key), cy);
+                }
                 for (int k = 0; k < drawn; k++)
                 {
                     bool selected = active && _selected.Contains(k);
@@ -618,6 +637,61 @@ public sealed class KeyTimeline : Control
         var text = Text(label, KeyNumberBrush, 10);
         if (text.Width + 3 > w) return;
         context.DrawText(text, new Point(x - text.Width / 2, cy - text.Height / 2));
+    }
+
+    /// <summary>
+    /// The frame distance between a key at <paramref name="fromTime"/> and the next at
+    /// <paramref name="toTime"/>, in light grey on the row's centre line: the number with a thin arrow
+    /// out to each key while it fits, then a line with an arrowhead at each end, then a plain line,
+    /// then nothing (<see cref="TimelineLayout.GapMark"/>).
+    /// </summary>
+    private void DrawGapMark(DrawingContext context, float fromTime, double fromWidth, float toTime, double toWidth, double cy)
+    {
+        double left = X(fromTime) + fromWidth / 2 + TimelineLayout.GapMarkPad;
+        double right = X(toTime) - toWidth / 2 - TimelineLayout.GapMarkPad;
+        double gap = right - left + 2 * TimelineLayout.GapMarkPad;
+        if (gap < TimelineLayout.GapLineMinWidth) return;
+        double y = Math.Round(cy) + 0.5;
+        var text = Text(TimelineLayout.FrameDistanceText(fromTime, toTime), GapMarkBrush, 9);
+        switch (TimelineLayout.GapMark(gap, text.Width))
+        {
+            case GapMarkKind.Labelled:
+                double mid = (left + right) / 2;
+                double textLeft = Math.Round(mid - text.Width / 2);
+                context.DrawText(text, new Point(textLeft, cy - text.Height / 2));
+                DrawArrow(context, textLeft - TimelineLayout.GapMarkPad, left, y);
+                DrawArrow(context, textLeft + text.Width + TimelineLayout.GapMarkPad, right, y);
+                break;
+            case GapMarkKind.Arrows:
+                context.DrawLine(GapMarkPen, new Point(left + 1, y), new Point(right - 1, y));
+                context.DrawGeometry(GapMarkBrush, null, ArrowHead(left, y, +1));
+                context.DrawGeometry(GapMarkBrush, null, ArrowHead(right, y, -1));
+                break;
+            case GapMarkKind.Line:
+                context.DrawLine(GapMarkPen, new Point(left, y), new Point(right, y));
+                break;
+        }
+    }
+
+    /// <summary>A thin shaft from <paramref name="from"/> with its arrowhead touching <paramref name="tip"/>.</summary>
+    private static void DrawArrow(DrawingContext context, double from, double tip, double y)
+    {
+        double dir = Math.Sign(tip - from);
+        context.DrawLine(GapMarkPen, new Point(from, y), new Point(tip - dir, y));
+        context.DrawGeometry(GapMarkBrush, null, ArrowHead(tip, y, -dir));
+    }
+
+    /// <summary>An arrowhead whose tip is at (<paramref name="x"/>, <paramref name="y"/>), its base toward <paramref name="dir"/> (+1 right, -1 left).</summary>
+    private static StreamGeometry ArrowHead(double x, double y, double dir)
+    {
+        const double length = TimelineLayout.GapArrowHead, half = 2.5;
+        var geometry = new StreamGeometry();
+        using var g = geometry.Open();
+        g.BeginFigure(new Point(x, y), true);
+        g.LineTo(new Point(x + dir * length, y - half));
+        g.LineTo(new Point(x + dir * length, y + half));
+        g.EndFigure(true);
+        return geometry;
     }
 
     private static StreamGeometry Diamond(double x, double y, double r)

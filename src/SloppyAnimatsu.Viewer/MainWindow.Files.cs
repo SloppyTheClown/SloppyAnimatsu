@@ -28,6 +28,7 @@ using SloppyAnimatsu.Core.Akt;
 using SloppyAnimatsu.Core.Diagnostics;
 using SloppyAnimatsu.Core.Fbx;
 using SloppyAnimatsu.Core.Model;
+using SloppyAnimatsu.Core.Updates;
 using SloppyAnimatsu.Rendering;
 
 namespace SloppyAnimatsu.Viewer;
@@ -145,49 +146,66 @@ public sealed partial class MainWindow
 
     private async Task ShowAbout()
     {
-        string version = BuildInfo.Version;
-        // The run's log is the file to attach to a bug report; naming it here saves hunting for
-        // %LOCALAPPDATA%.
-        string log = AppLog.FilePath is { } logPath
-            ? "Log for this run:\n" + logPath
-            : "No log file is open for this run.";
-        TextBlock body = new TextBlock
+        // A local build (a build tree or the dev release folder marked with DEV_BUILD.txt) says so,
+        // since its version number is only the one the next release will carry.
+        bool devBuild = UpdateCheck.IsDevelopmentFolder(AppFolder.Install.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        string version = devBuild ? $"Version {BuildInfo.Version} (development build)" : $"Version {BuildInfo.Version}";
+        StackPanel panel = new StackPanel
+        {
+            Spacing = 10.0,
+            Margin = new Thickness(24.0),
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        try
+        {
+            // The window icon doubles as the logo; a decode failure just leaves it out.
+            panel.Children.Add(new Image
+            {
+                Source = new Bitmap(AssetLoader.Open(new Uri("avares://SloppyAnimatsu.Viewer/Assets/app.ico"))),
+                Width = 96.0,
+                Height = 96.0,
+                HorizontalAlignment = HorizontalAlignment.Center
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("About: the logo could not be loaded: " + ex.Message);
+        }
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Sloppy Animatsu",
+            FontSize = 22.0,
+            FontWeight = FontWeight.DemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = version,
+            Opacity = 0.75,
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+        panel.Children.Add(new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
-            Text = "SloppyAnimatsu: an animation and rigging tool in C# / .NET 9, inspired by akeytsu.\n\nViewer build " + version + ". It reads and writes .akt scenes, FBX, .aknm and the preferences and shortcut files.\n\n" + log
-        };
+            TextAlignment = TextAlignment.Center,
+            MaxWidth = 380.0,
+            Text = "A 3D character animation and rigging tool, developed with usability in mind, first and foremost."
+        });
         Button close = new Button
         {
             Content = "Close",
-            HorizontalAlignment = HorizontalAlignment.Center
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0.0, 6.0, 0.0, 0.0)
         };
-        StackPanel panel = new StackPanel
-        {
-            Spacing = 8.0,
-            Margin = new Thickness(20.0),
-            Children = 
-            {
-                (Control)new TextBlock
-                {
-                    Text = "Sloppy Animatsu",
-                    FontSize = 22.0,
-                    FontWeight = FontWeight.DemiBold
-                },
-                (Control)body,
-                (Control)close
-            }
-        };
+        panel.Children.Add(close);
         Window window = new Window
         {
-            Title = "About SloppyAnimatsu",
-            Width = 560.0,
-            Height = 400.0,
+            Title = "About Sloppy Animatsu",
+            Width = 440.0,
+            SizeToContent = SizeToContent.Height,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = new ScrollViewer
-            {
-                Content = panel
-            }
+            Content = panel
         };
         close.Click += delegate
         {
@@ -300,7 +318,10 @@ public sealed partial class MainWindow
             {
                 active.Dirty = true;
             }
-            SceneDocument sceneDocument = _documents.Open(SceneModel.Load(path), path);
+            MemoryLog.Step("open " + Path.GetFileName(path));
+            SceneModel model = SceneModel.Load(path);
+            MemoryLog.Step("parsed");
+            SceneDocument sceneDocument = _documents.Open(model, path);
             ShowDocument(sceneDocument);
             if (active != null && active != sceneDocument && !_documents.Documents.Contains(active))
             {
@@ -325,8 +346,10 @@ public sealed partial class MainWindow
     private static void ReleaseLoadBuffers() =>
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
+            MemoryLog.Step("first frame drawn, releasing load buffers");
             System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            MemoryLog.Step("load buffers released");
         }, Avalonia.Threading.DispatcherPriority.Background);
 
     private async Task ShowWelcome()
@@ -351,6 +374,7 @@ public sealed partial class MainWindow
         _document = state;
         _pose = new ScenePose(document.Model);
         _pose.TargetLocked = target => CameraEditor.IsTargetLocked(target, _timeline.ActiveStack, (int)MathF.Round(_time));
+        MemoryLog.Step("pose built");
         // The modeless retarget window edits one scene; switching to another closes it.
         if (_retargetDialog is { } retarget && !ReferenceEquals(retarget.Session.Model, document.Model))
             retarget.Close();
@@ -371,13 +395,18 @@ public sealed partial class MainWindow
         _syncing = false;
         Character character = ((flag && _options.Character != null) ? _pose.Characters.FirstOrDefault((Character c) => c.Name == _options.Character) : null) ?? ((state.Character != null) ? _pose.Characters.FirstOrDefault((Character c) => c.Name == state.Character) : null) ?? document.Model.Scene.CurrentCharacter ?? _pose.Characters.FirstOrDefault((Character c) => c.Animations.Any()) ?? _pose.Characters.FirstOrDefault();
         string animationName = state.Animation ?? (flag ? _options.Animation : null) ?? ((document.Model.Scene.Context == InterfaceContext.Rigging) ? "(rest pose)" : null);
+        MemoryLog.Step("character list");
         SelectCharacter(character, animationName, (!flag) ? state.Time : (_options.Frame ?? state.Time));
+        MemoryLog.Step("character selected");
         _focusedView = 0;
         LoadViews();
         RefreshMenu();
+        MemoryLog.Step("views and menu");
         _outliner.Build(document.Model.Scene);
+        MemoryLog.Step("outliner");
         _lastContext = document.Model.Scene.Context;
         ApplyDockLayout();
+        MemoryLog.Step("dock layout");
         _dirty = documentDirty;
         UpdateTitle();
         UpdateTabs();

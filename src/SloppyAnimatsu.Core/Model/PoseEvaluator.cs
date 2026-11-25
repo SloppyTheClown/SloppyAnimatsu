@@ -568,17 +568,17 @@ public sealed class PoseEvaluator
 
         bool hold = IsStepMode(track.TangentModes, segment.A);
 
-        float Angle(Func<ReverseFootKey, float> channel)
+        // Read per key without building key objects (a packed list would keep them).
+        float Angle(string member)
         {
-            float Value(IReadOnlyList<AnimKey?> list, int i) => i < list.Count && list[i] is ReverseFootKey k ? channel(k) : 0f;
-            if (hold) return Value(track.Keys, segment.A);
-            return Hermite(Value(track.Keys, segment.A), Value(track.Keys, segment.B),
-                Value(track.TangentsOut, segment.A), Value(track.TangentsIn, segment.Next), segment.U);
+            if (hold) return track.KeyScalar("KeyList", segment.A, member);
+            return Hermite(track.KeyScalar("KeyList", segment.A, member), track.KeyScalar("KeyList", segment.B, member),
+                track.KeyScalar("TOutList", segment.A, member), track.KeyScalar("TInList", segment.Next, member), segment.U);
         }
 
         var rest = shoeIndices.Select(i => RestTransforms[i]).ToArray();
         var axis = rf.RollAxisPlant;
-        var locals = ReverseFootSolver.ShoeLocals(rest, Angle(k => k.RollAngle), Angle(k => k.TwistAngle), Angle(k => k.BankAngle),
+        var locals = ReverseFootSolver.ShoeLocals(rest, Angle("RollAngle"), Angle("TwistAngle"), Angle("BankAngle"),
             ReverseFootLimits.FromScene(Character.Model.Scene), new Vector3(axis.X, axis.Y, axis.Z));
         for (int j = 0; j < 7; j++) values[shoe[j]] = Decompose(rest[j], locals[j]);
 
@@ -1292,11 +1292,14 @@ public sealed class PoseEvaluator
     /// </summary>
     private sealed class TrackData(AnimTrack track)
     {
-        private readonly Transform?[] _values = Read(track.Keys);
-        private readonly Object3D?[] _spaces = track.Keys.Select(k => (k as TransformKey)?.Space).ToArray();
-        private readonly float?[] _fovs = ReadFov(track.Keys);
-        private readonly float[] _fovIn = ReadFovTangents(track.TangentsIn);
-        private readonly float[] _fovOut = ReadFovTangents(track.TangentsOut);
+        // Packed plain transform keys are read without per-key objects; they hold no camera or IK data.
+        private readonly bool _plainTransforms = track.HasPackedTransformKeys;
+        private readonly Transform?[] _values = track.ReadTransforms("KeyList");
+        private readonly Object3D?[] _spaces = track.ReadSpaces();
+        // Only camera keys carry an FOV; packed lists of other keys are not walked for one.
+        private readonly float?[] _fovs = track.HasPackedNonCameraKeys ? [] : ReadFov(track.Keys);
+        private readonly float[] _fovIn = track.HasPackedNonCameraKeys ? [] : ReadFovTangents(track.TangentsIn);
+        private readonly float[] _fovOut = track.HasPackedNonCameraKeys ? [] : ReadFovTangents(track.TangentsOut);
         private TrackKeys? _present;
 
         public AnimTrack Track => track;
@@ -1327,7 +1330,7 @@ public sealed class PoseEvaluator
             Enumerable.Range(0, Math.Min(stackKeyCount, _values.Length)).Where(HasKey).ToArray();
 
         /// <summary><c>CKeyIK.Flags</c> of key <paramref name="i"/>, or 0 for other key types.</summary>
-        public uint IKFlags(int i) => (_ikFlags ??= track.Keys.Select(k => (k as IKKey)?.Flags ?? 0u).ToArray()) is var f && i < f.Length ? f[i] : 0u;
+        public uint IKFlags(int i) => _plainTransforms ? 0u : (_ikFlags ??= track.ReadIKFlags()) is var f && i < f.Length ? f[i] : 0u;
 
         private uint[]? _ikFlags;
 
@@ -1359,8 +1362,8 @@ public sealed class PoseEvaluator
                 // The last key is the loop key: its stored value is ignored and the first key's
                 // value is used.
                 if (values.Length > 1) values[^1] = values[0];
-                var tIn = Read(track.TangentsIn);
-                var tOut = Read(track.TangentsOut);
+                var tIn = track.ReadTransforms("TInList");
+                var tOut = track.ReadTransforms("TOutList");
                 Transform Tangent(Transform?[] list, int i) => i < list.Length && list[i] is { } t ? t : default;
                 var modes = track.TangentModes;
                 _present = new TrackKeys(

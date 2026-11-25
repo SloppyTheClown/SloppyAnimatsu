@@ -91,6 +91,16 @@ public static class OutlinerStyle
         _ => OutlinerKind.Object,
     };
 
+    /// <summary>
+    /// A bound mesh: a triangle (5,3.5)-(9.5,11.2)-(0.5,11.2), a joint ball of radius 1.9 at
+    /// (9.6,2.6) and a bone 0.9 wide from the ball's edge to the triangle's right side. The parts
+    /// barely touch, so the default even-odd fill leaves no seams and a cut-out still works.
+    /// </summary>
+    private const string SkinnedTriangle =
+        "M5,3.5 L9.5,11.2 L0.5,11.2 Z " +
+        "M7.7,2.6 A1.9,1.9 0 1 1 11.5,2.6 A1.9,1.9 0 1 1 7.7,2.6 Z " +
+        "M8.66,4.31 L8.0,3.71 L6.27,5.6 L6.93,6.2 Z";
+
     /// <summary>The glyph a kind is drawn with: path data in a <see cref="Box"/>-square box.</summary>
     public static string GlyphOf(OutlinerKind kind) => kind switch
     {
@@ -105,11 +115,11 @@ public static class OutlinerStyle
         // A triangle: a mesh.
         OutlinerKind.Mesh => "M6,1.5 L11.2,10.5 L0.8,10.5 Z",
         OutlinerKind.UnpickableMesh => "M6,1.5 L11.2,10.5 L0.8,10.5 Z M0.8,11.2 L11.2,0.8 L12,1.6 L1.6,12 Z",
-        // The triangle with a band across it: skinned.
-        OutlinerKind.SkinnedMesh => "M6,1.5 L11.2,10.5 L0.8,10.5 Z M4.6,7.4 H7.4 V9.2 H4.6 Z",
-        // The skinned triangle with a padlock body and shackle: locked.
-        OutlinerKind.LockedSkinnedMesh =>
-            "M6,1.5 L11.2,10.5 L0.8,10.5 Z M4.4,8.4 H7.6 V10.8 H4.4 Z M4.9,6.8 A1.1,1.1 0 0 1 7.1,6.8 L6.5,6.8 A0.5,0.5 0 0 0 5.5,6.8 Z",
+        // Bound (skinned): the mesh triangle, moved down-left, tied by a short bone to a joint ball
+        // at the top right - the same shape family as an unbound mesh, told apart at a glance.
+        OutlinerKind.SkinnedMesh => SkinnedTriangle,
+        // The bound glyph with a padlock body cut out of the triangle: locked.
+        OutlinerKind.LockedSkinnedMesh => SkinnedTriangle + " M3.7,8.1 H6.1 V10.3 H3.7 Z",
         // A hand (four fingers, a thumb and the palm): an IK controller, the hand of an arm chain.
         OutlinerKind.IkController =>
             "M3,6 H9.5 V9 Q9.5,11.5 7,11.5 H5 Q3,11.5 3,9.5 Z M3,2.5 H4.3 V6 H3 Z M4.8,1.5 H6.1 V6 H4.8 Z " +

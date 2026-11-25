@@ -31,11 +31,19 @@ public static class AktRefs
             case AktStruct s:
                 for (int fi = 0; fi < s.FieldCount; fi++) Remap(s.ValueAt(fi), lookup);
                 break;
-            case List<object?> list:
-                foreach (var v in list) Remap(v, lookup);
+            case AktMrsKeyColumn { IsPacked: true } column:
+                column.MapReferences((t, raw) =>
+                {
+                    // Same rule as a single reference above.
+                    if (t == null) return (null, -1);
+                    var mapped = lookup(t);
+                    return (mapped, mapped == null ? -1 : raw);
+                });
                 break;
-            case object?[] tuple:
-                foreach (var v in tuple) Remap(v, lookup);
+            case AktPackedList { IsPacked: true }:
+                break; // tangent modes: no references
+            case IList<object?> list:   // lists, demoted packed lists and tuples
+                for (int i = 0; i < list.Count; i++) Remap(list[i], lookup);
                 break;
         }
     }

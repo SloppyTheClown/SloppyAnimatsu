@@ -587,10 +587,7 @@ public sealed partial class MainWindow
         {
             yield return scaleFields[k];
         }
-        yield return _stackEnabled;
-        yield return _stackCycle;
-        yield return _stackAdditive;
-        yield return _stackOpacity;
+        yield return _stackBlend;
         yield return _mixerList;
         yield return _mixerTextures;
         if (_mixerNew != null)
@@ -661,6 +658,7 @@ public sealed partial class MainWindow
             "Painter" => "CSkinWorkshopPreferences",
             "Rig Workshop" => "CSkeletonPreferences",
             "Timeline" => "CTimelinePreferences", 
+            "Stacker" => "CStackerPreferences",
             _ => null, 
         };
         return result;

@@ -191,13 +191,13 @@ public sealed partial class MainWindow
             int shown = m.TextureIndexAt(animation, _time);
             _matList.SelectedIndex = shown;
             _matName.Text = shown >= 0 ? m.TextureName(shown) : "";
-            _matName.IsEnabled = shown >= 0;
-            _matRemove.IsEnabled = shown >= 0;
+            DisabledHint.SetEnabled(_matName, shown >= 0, "a texture shown at this frame");
+            DisabledHint.SetEnabled(_matRemove, shown >= 0, "a texture shown at this frame");
             _matTransparent.IsChecked = m.Transparent;
             _matNearest.IsChecked = m.NearestFilter;
-            _matKey.IsEnabled = animation != null && shown >= 0;
+            DisabledHint.SetEnabled(_matKey, animation != null && shown >= 0, "an animation and a texture shown at this frame");
             var keys = animation != null ? m.TextureKeys(animation) : [];
-            _matUnkey.IsEnabled = keys.Any(k => k.Time == CurrentKeyFrame);
+            DisabledHint.SetEnabled(_matUnkey, keys.Any(k => k.Time == CurrentKeyFrame), "a texture key at the current frame");
             _matKeys.Text = animation == null
                 ? "No animation of this mesh's character is current; picks set the rest texture."
                 : keys.Count == 0

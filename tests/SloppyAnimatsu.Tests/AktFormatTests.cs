@@ -70,10 +70,10 @@ public class AktFormatTests
         Assert.Same(track, root.Get<AktReference>("Current").Target);
         Assert.Same(root, track.Get<AktReference>("Target").Target);
 
-        var keys = track.Get<List<object?>>("KeyList");
+        var keys = track.Get<IList<object?>>("KeyList");
         Assert.Equal(2, keys.Count);
         Assert.Null(keys[1]);
-        var key = Assert.IsType<AktStruct>(keys[0]);
+        var key = Assert.IsAssignableFrom<AktStruct>(keys[0]);
         Assert.Equal("class CKeyMRS", key.TypeName);
         var mrs = key.Get<AktStruct>("Key");
         Assert.Equal(1.5f, mrs.Get<float>("TranslationX"));

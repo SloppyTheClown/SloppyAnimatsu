@@ -570,7 +570,14 @@ public sealed class PoseEditSession
     /// Starts placing <paramref name="character"/> in the scene: a drag of the character object
     /// itself, which moves or turns the whole character, rig and meshes, at every frame
     /// </summary>
-    public PlacementDrag BeginPlacement(Character character) => new(this, character) { Snap = Snap };
+    public PlacementDrag BeginPlacement(Character character) => new(this, character, allowScale: false) { Snap = Snap };
+
+    /// <summary>
+    /// Starts placing any object that is not a controller (a character, a mesh, a group): a drag of
+    /// its own transform, which everything below it follows. <paramref name="allowScale"/> lets the
+    /// drag scale it too, which the Rigging context allows.
+    /// </summary>
+    public PlacementDrag BeginPlacement(Object3D target, bool allowScale) => new(this, target, allowScale) { Snap = Snap };
 
     /// <summary>
     /// Starts editing <paramref name="controller"/>'s slot of the rigging context's pose. Returns
@@ -681,6 +688,37 @@ public sealed class PoseEditSession
     /// controllers written.
     /// </summary>
     public int SetChannelValue(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, int channel,
+        float value, out string? reason)
+    {
+        return SetChannelValueCore(animation, controllers, frame, channel, value, out reason);
+    }
+
+    /// <summary>
+    /// The TRANSFORM panel's typed value for an object that is not a controller (a character, a
+    /// mesh, a group): sets <paramref name="channel"/> (numbered as in <see cref="SetChannelValue"/>)
+    /// of its own transform as one undoable placement edit. Scale channels need
+    /// <paramref name="allowScale"/> (the Rigging context).
+    /// </summary>
+    public bool SetPlacementValue(Object3D target, int channel, float value, bool allowScale, out string? reason)
+    {
+        if (channel is < 0 or > 8) throw new ArgumentOutOfRangeException(nameof(channel));
+        reason = null;
+        if (channel >= 6)
+        {
+            if (!allowScale)
+            {
+                reason = $"{target.Name} can be scaled in the Rigging context only.";
+                return false;
+            }
+            value = FloorScale(value);
+        }
+        var drag = BeginPlacement(target, allowScale);
+        drag.Set(WithChannel(drag.BaseLocal, channel, value), (AnimChannels)(1u << channel));
+        drag.Commit();
+        return true;
+    }
+
+    private int SetChannelValueCore(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, int channel,
         float value, out string? reason)
     {
         if (channel is < 0 or > 8) throw new ArgumentOutOfRangeException(nameof(channel));
@@ -1769,45 +1807,56 @@ public abstract class TransformDrag
 }
 
 /// <summary>
-/// A drag that places a whole character in the scene: it edits the character object's own
-/// transform (its <c>LTM</c>), which every controller, joint and mesh of the character composes
-/// under. The placement is not animated, so it is the same at every frame and in both contexts; it
-/// is saved with the scene and undone like any edit.
+/// A drag that places an object that is not a controller (a whole character, a mesh, a group):
+/// it edits the object's own transform (its <c>LTM</c>), which everything below it composes under.
+/// The placement is not animated, so it is the same at every frame; it is saved with the scene
+/// and undone like any edit. It scales only when the Rigging context allows it.
 /// </summary>
 public sealed class PlacementDrag : TransformDrag
 {
     private readonly PoseEditSession _session;
-    private readonly Character _character;
+    private readonly Object3D _target;
+    private readonly Character _owner;
+    private readonly bool _allowScale;
     private readonly EditSnapshot _before;
 
-    internal PlacementDrag(PoseEditSession session, Character character)
-        : base(character, Transform.FromMatrixLoose(character.LocalMatrix))
+    internal PlacementDrag(PoseEditSession session, Object3D target, bool allowScale)
+        : base(target, Transform.FromMatrixLoose(target.LocalMatrix))
     {
         _session = session;
-        _character = character;
-        _before = EditSnapshot.TakeShallow(character, [character]);
-        if (character.Parent3D is { } parent)
+        _target = target;
+        _allowScale = allowScale;
+        _owner = target as Character ?? OwnerOf(target) ?? session.Character;
+        _before = EditSnapshot.TakeShallow(_owner, [target]);
+        if (target.Parent3D is { } parent)
         {
             ParentWorldMatrix = parent.WorldMatrix;
             ParentWorldScale = Object3D.LocalScale(parent.LocalMatrix);
         }
     }
 
+    private static Character? OwnerOf(Object3D o)
+    {
+        for (var p = o.Parent3D; p != null; p = p.Parent3D)
+            if (p is Character c) return c;
+        return null;
+    }
+
     public override bool CanTranslate => true;
 
-    /// <summary>A placement moves and turns; scaling a whole character is left to its rig.</summary>
-    public override bool CanScale => false;
+    /// <summary>A placement moves and turns; it scales only in the Rigging context.</summary>
+    public override bool CanScale => _allowScale;
 
     public override void Set(Transform local, AnimChannels channels)
     {
-        _character.LocalMatrix = local.ToMatrix();
+        _target.LocalMatrix = local.ToMatrix();
         _session.Pose.RefreshPlacements();
         Posed = local;
     }
 
     public override EditRecord Commit()
     {
-        var record = new EditRecord($"Placed {_character.Name}", _before, EditSnapshot.TakeShallow(_character, [_character]));
+        var record = new EditRecord($"Placed {_target.Name}", _before, EditSnapshot.TakeShallow(_owner, [_target]));
         _session.Record(record);
         return record;
     }
@@ -1820,7 +1869,7 @@ public sealed class PlacementDrag : TransformDrag
         return [];
     }
 
-    internal override Object3D? FrameParent => _character.Parent3D;
+    internal override Object3D? FrameParent => _target.Parent3D;
 }
 
 /// <summary>A drag that poses its controller at one key.</summary>
@@ -2241,13 +2290,46 @@ public sealed class GroupDrag : TransformDrag
 /// <summary>A committed edit: what it changed, before and after.</summary>
 public sealed record EditRecord(string Description, EditSnapshot Before, EditSnapshot After);
 
-/// <summary>Undo and redo of committed edits, oldest dropped past <see cref="Capacity"/>.</summary>
-public sealed class EditHistory
+/// <summary>
+/// Undo and redo of committed edits. Each step keeps only the side that is not on screen: an
+/// undoable step its Before, a redoable step its After; the other side is dropped and captured
+/// again from the document when the step is undone or redone. Past <see cref="MemoryBudget"/> the
+/// oldest steps move to a temporary spill file and are read back when needed; steps are dropped
+/// only past <see cref="Capacity"/> or once the spill file would pass <see cref="DiskBudget"/>.
+/// </summary>
+public sealed class EditHistory : IDisposable
 {
     private readonly List<EditRecord> _done = [];
     private readonly List<EditRecord> _undone = [];
+    // The side the caller restores after Undo/Redo; it stays in memory until the next step.
+    private EditSnapshot? _restored;
+    private SnapshotSpillFile? _spill;
+    private bool _spillFailed;
 
     public int Capacity { get; init; } = 100;
+
+    /// <summary>
+    /// The most memory the undo steps may hold together (<see cref="EditSnapshot.EstimatedBytes"/>);
+    /// past it the oldest steps move to the spill file. The newest step always stays in memory.
+    /// </summary>
+    public long MemoryBudget { get; init; } = 512L << 20;
+
+    /// <summary>The most the spill file may hold; past it the oldest steps are dropped.</summary>
+    public long DiskBudget { get; init; } = 8L << 30;
+
+    /// <summary>The folder of the spill file (the temp folder by default).</summary>
+    public string? SpillFolder { get; init; }
+
+    /// <summary>The memory held by every undo and redo step.</summary>
+    public long EstimatedBytes => Records().Sum(r => (r.Before?.EstimatedBytes ?? 0) + (r.After?.EstimatedBytes ?? 0));
+
+    /// <summary>The bytes of undo and redo steps that live in the spill file.</summary>
+    public long SpilledBytes => Records().Sum(r => (r.Before?.SpilledBytes ?? 0) + (r.After?.SpilledBytes ?? 0));
+
+    /// <summary>The spill file's length, dropped steps included until it is compacted.</summary>
+    public long SpillFileBytes => _spill?.Length ?? 0;
+
+    private IEnumerable<EditRecord> Records() => _done.Concat(_undone);
 
     public bool CanUndo => _done.Count > 0;
     public bool CanRedo => _undone.Count > 0;
@@ -2265,6 +2347,10 @@ public sealed class EditHistory
         _done.Add(ReferenceEquals(before, record.Before) ? record : record with { Before = before, After = after });
         _undone.Clear();
         if (_done.Count > Capacity) _done.RemoveAt(0);
+        SettleRestored(null);
+        // The document is in the After state now: that side is not needed until this step is undone.
+        ReleaseIfUnneeded(after);
+        Enforce();
     }
 
     /// <summary>The edit to undo (its <see cref="EditRecord.Before"/> is to be restored), or null.</summary>
@@ -2274,6 +2360,10 @@ public sealed class EditHistory
         var record = _done[^1];
         _done.RemoveAt(_done.Count - 1);
         _undone.Add(record);
+        // The document is in this step's After state: capture it again if it was dropped.
+        record.After?.Recapture();
+        SettleRestored(record.Before);
+        Enforce();
         return record;
     }
 
@@ -2284,6 +2374,9 @@ public sealed class EditHistory
         var record = _undone[^1];
         _undone.RemoveAt(_undone.Count - 1);
         _done.Add(record);
+        record.Before?.Recapture();
+        SettleRestored(record.After);
+        Enforce();
         return record;
     }
 
@@ -2302,29 +2395,148 @@ public sealed class EditHistory
     {
         _done.Clear();
         _undone.Clear();
+        _restored = null;
+        _spill?.Dispose();
+        _spill = null;
+    }
+
+    public void Dispose() => Clear();
+
+    // The side restored by the previous Undo/Redo is on screen now; drop it unless a step still needs it.
+    private void SettleRestored(EditSnapshot? next)
+    {
+        var previous = _restored;
+        _restored = next;
+        if (previous != null && !ReferenceEquals(previous, next)) ReleaseIfUnneeded(previous);
+    }
+
+    private void ReleaseIfUnneeded(EditSnapshot? snapshot)
+    {
+        if (snapshot == null || ReferenceEquals(snapshot, _restored)) return;
+        foreach (var r in _done) if (ReferenceEquals(r.Before, snapshot)) return;
+        foreach (var r in _undone) if (ReferenceEquals(r.After, snapshot)) return;
+        snapshot.Release();
+    }
+
+    /// <summary>Moves the oldest steps to the spill file past the memory budget, drops the oldest past the disk budget.</summary>
+    private void Enforce()
+    {
+        long inMemory = EstimatedBytes;
+        if (inMemory > MemoryBudget)
+        {
+            // Oldest first: the undo end from its bottom, then the redo end from its far end; the
+            // next undo and the next redo stay in memory.
+            var candidates = _done.Take(_done.Count - 1).Select(r => r.Before)
+                .Concat(_undone.Take(Math.Max(0, _undone.Count - 1)).Select(r => r.After));
+            foreach (var snapshot in candidates)
+            {
+                if (inMemory <= MemoryBudget) break;
+                // A spilled step keeps its entry overhead in memory, so test for unspilled fields, not zero bytes.
+                if (snapshot == null || !snapshot.HasFieldsInMemory) continue;
+                var file = SpillFile();
+                if (file == null) break;
+                long held = snapshot.EstimatedBytes;
+                snapshot.SpillTo(file);
+                inMemory -= held - snapshot.EstimatedBytes;
+            }
+            // Without a spill file the budget is kept the old way: drop the oldest steps.
+            if (_spill == null)
+                while (_done.Count > 1 && inMemory > MemoryBudget)
+                {
+                    inMemory -= Size(_done[0]);
+                    _done.RemoveAt(0);
+                }
+        }
+        if (_spill == null) return;
+        long spilled = SpilledBytes;
+        while (_done.Count > 1 && spilled > DiskBudget)
+        {
+            spilled -= (_done[0].Before?.SpilledBytes ?? 0) + (_done[0].After?.SpilledBytes ?? 0);
+            _done.RemoveAt(0);
+        }
+        // Dropped and recaptured steps leave dead bytes behind: rewrite the file once they are most of it.
+        if (_spill.Length > 64L << 20 && _spill.Length > 2 * spilled) Compact();
+    }
+
+    private static long Size(EditRecord r) => (r.Before?.EstimatedBytes ?? 0) + (r.After?.EstimatedBytes ?? 0);
+
+    private SnapshotSpillFile? SpillFile()
+    {
+        if (_spill != null || _spillFailed) return _spill;
+        try
+        {
+            _spill = new SnapshotSpillFile(SpillFolder);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _spillFailed = true;
+        }
+        return _spill;
+    }
+
+    private void Compact()
+    {
+        var old = _spill!;
+        SnapshotSpillFile fresh;
+        try
+        {
+            fresh = new SnapshotSpillFile(SpillFolder);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+        foreach (var r in Records())
+        {
+            r.Before?.SpillTo(fresh, alreadySpilled: true);
+            r.After?.SpillTo(fresh, alreadySpilled: true);
+        }
+        _spill = fresh;
+        old.Dispose();
     }
 }
 
 /// <summary>
-/// A deep copy of the fields of some objects and every object below them, restored in place so
-/// that the scene's wrappers stay valid. Edits only change field values of these objects: a key
-/// edit those of one stack and its tracks, a rest-pose edit those of the character's poses (and,
-/// when animations are converted, its stacks).
+/// The fields of some objects and every object below them, restored in place so that the
+/// scene's wrappers stay valid. Edits only change field values of these objects: a key edit those
+/// of one stack and its tracks, a rest-pose edit those of the character's poses (and, when
+/// animations are converted, its stacks). The fields are held encoded (<see cref="AktFieldSnapshot"/>),
+/// a few bytes per value instead of a copied value tree.
 /// </summary>
 public sealed class EditSnapshot
 {
-    private readonly (AktObject Target, AktStruct Fields, AktObject[] Children, bool Shared)[] _objects;
+    private sealed class Entry(AktObject target, AktFieldSnapshot fields, AktObject[] children)
+    {
+        public AktObject Target { get; } = target;
+        public AktFieldSnapshot? Fields { get; set; } = fields;
+        public AktObject[]? Children { get; set; } = children;
+        /// <summary>Captured by sharing the values (see <see cref="SharingEntry"/>) rather than encoding them.</summary>
+        public bool Shared => Fields?.IsShared ?? _sharedCapture;
+        private bool _sharedCapture;
+
+        public void Release()
+        {
+            _sharedCapture = Shared;
+            Fields = null;
+            Children = null;
+        }
+    }
+
+    private readonly Entry[] _objects;
     private readonly (Mesh Mesh, VertexWeight[][] Smooth, VertexWeight[][] Rigid)[] _weights;
     private readonly (Mesh Mesh, uint[] Flags)[] _hidden;
     private readonly (Mesh Mesh, Matrix4x4 Position, float Distance)[] _pointOfView;
     private readonly uint? _hiddenCounter;
     private readonly bool _shareLargeArrays;
+    private readonly bool _wholeDocument;
+    private bool _released;
 
-    private EditSnapshot(Character? owner, bool restPose, (AktObject, AktStruct, AktObject[], bool)[] objects,
+    private EditSnapshot(Character? owner, bool restPose, Entry[] objects,
         bool shareLargeArrays = false,
         (Mesh, VertexWeight[][], VertexWeight[][])[]? weights = null,
         (Mesh, uint[])[]? hidden = null,
-        (Mesh, Matrix4x4, float)[]? pointOfView = null)
+        (Mesh, Matrix4x4, float)[]? pointOfView = null,
+        bool wholeDocument = false)
     {
         Owner = owner;
         RestPose = restPose;
@@ -2334,6 +2546,20 @@ public sealed class EditSnapshot
         _pointOfView = pointOfView ?? [];
         _hiddenCounter = owner?.HiddenVerticesCounter;
         _shareLargeArrays = shareLargeArrays;
+        _wholeDocument = wholeDocument;
+    }
+
+    private EditSnapshot(EditSnapshot source, Entry[] objects)
+    {
+        Owner = source.Owner;
+        RestPose = source.RestPose;
+        _objects = objects;
+        _weights = source._weights;
+        _hidden = source._hidden;
+        _pointOfView = source._pointOfView;
+        _hiddenCounter = source._hiddenCounter;
+        _shareLargeArrays = source._shareLargeArrays;
+        _wholeDocument = source._wholeDocument;
     }
 
     /// <summary>The character whose evaluation must be refreshed after a restore.</summary>
@@ -2359,7 +2585,7 @@ public sealed class EditSnapshot
     /// </summary>
     public static EditSnapshot TakeShallow(Character owner, IEnumerable<SceneObject> objects) =>
         new(owner, false, objects.DistinctBy(o => (object)o.Source, ReferenceEqualityComparer.Instance)
-            .Select(o => (o.Source, Copy(o.Source), o.Source.Children.ToArray(), false)).ToArray());
+            .Select(o => Encoded(o.Source, shareLargeArrays: false)).ToArray());
 
     /// <summary>
     /// A snapshot for a structural rig edit (create/delete/reparent joints, Add IK, Bind/Unbind):
@@ -2388,6 +2614,8 @@ public sealed class EditSnapshot
     /// A snapshot of every node of the document, for an edit that can touch any object's references
     /// (deleting whole objects). Bulk arrays are shared as in <see cref="TakeRig"/>. <paramref name="owner"/>
     /// is the character to re-evaluate after a restore; it must exist on both sides of the edit.
+    /// Animation tracks the edit removes from the document stay shared after <see cref="Trim"/>:
+    /// nothing can reach them any more, so the step keeps the removed tracks themselves.
     /// </summary>
     public static EditSnapshot TakeScene(Character? owner, Scene scene) =>
         new(owner, false,
@@ -2395,11 +2623,14 @@ public sealed class EditSnapshot
                 .Distinct(ReferenceEqualityComparer.Instance).Cast<AktObject>()
                 .Select(SharingEntry)
                 .ToArray(),
-            shareLargeArrays: true);
+            shareLargeArrays: true, wholeDocument: true);
 
-    private static (AktObject, AktStruct, AktObject[], bool)[] Copy(IEnumerable<SceneObject> objects) =>
+    private static Entry[] Copy(IEnumerable<SceneObject> objects) =>
         objects.DistinctBy(o => (object)o.Source, ReferenceEqualityComparer.Instance)
-            .SelectMany(o => o.Source.PreOrder()).Select(o => (o, Copy(o), o.Children.ToArray(), false)).ToArray();
+            .SelectMany(o => o.Source.PreOrder()).Select(o => Encoded(o, shareLargeArrays: false)).ToArray();
+
+    private static Entry Encoded(AktObject o, bool shareLargeArrays) =>
+        new(o, AktFieldSnapshot.Capture(o, shareLargeArrays), o.Children.ToArray());
 
     /// <summary>
     /// A snapshot of the skin weight arrays of some meshes, for the Skin Workshop's edits: only the
@@ -2426,6 +2657,8 @@ public sealed class EditSnapshot
 
     public void Restore()
     {
+        if (_released)
+            throw new InvalidOperationException("This undo step's state was dropped while it was on screen and has not been captured again.");
         if (_weights.Length > 0)
         {
             foreach (var (mesh, smooth, rigid) in _weights)
@@ -2442,11 +2675,10 @@ public sealed class EditSnapshot
             mesh.BlendshapeCameraDistanceFromAnchor = distance;
         }
         if (_hiddenCounter is { } counter && Owner != null) Owner.HiddenVerticesCounter = counter;
-        foreach (var (target, fields, children, shared) in _objects)
+        foreach (var entry in _objects)
         {
-            target.Fields.Clear();
-            target.Fields.AddRange(shared ? fields.Fields : fields.Clone(_shareLargeArrays).Fields);
-            if (!target.Children.SequenceEqual(children)) target.SetChildren(children);
+            entry.Fields!.RestoreInto(entry.Target);
+            if (!entry.Target.Children.SequenceEqual(entry.Children!)) entry.Target.SetChildren(entry.Children!);
         }
     }
 
@@ -2460,123 +2692,158 @@ public sealed class EditSnapshot
         table.Write();
     }
 
+    /// <summary>
+    /// Drops the captured fields, keeping which objects they belong to: the history calls this for
+    /// the side of a step that is on screen, and <see cref="Recapture"/> reads them back from the
+    /// document before that side is needed. Weight and point-of-view snapshots keep their data.
+    /// </summary>
+    public void Release()
+    {
+        if (_released || _objects.Length == 0) return;
+        foreach (var entry in _objects) entry.Release();
+        _released = true;
+    }
+
+    /// <summary>Captures the fields again from the document after <see cref="Release"/>; the document must be in this side's state.</summary>
+    public void Recapture()
+    {
+        if (!_released) return;
+        foreach (var entry in _objects)
+        {
+            entry.Fields = entry.Shared
+                ? AktFieldSnapshot.CaptureShared(entry.Target)
+                : AktFieldSnapshot.Capture(entry.Target, _shareLargeArrays);
+            entry.Children = entry.Target.Children.ToArray();
+        }
+        _released = false;
+    }
+
+    /// <summary>Whether the fields were dropped by <see cref="Release"/> and not captured again.</summary>
+    public bool IsReleased => _released;
+
+    /// <summary>
+    /// Moves the encoded fields held in memory into <paramref name="file"/>; a restore reads them
+    /// back. With <paramref name="alreadySpilled"/> it moves instead the fields that already live in
+    /// another spill file (compaction).
+    /// </summary>
+    public void SpillTo(SnapshotSpillFile file, bool alreadySpilled = false)
+    {
+        foreach (var entry in _objects)
+            if (entry.Fields is { IsShared: false } fields && fields.IsSpilled == alreadySpilled)
+                fields.SpillTo(file);
+    }
+
+    /// <summary>Whether any encoded fields are still in memory (so <see cref="SpillTo"/> would free something).</summary>
+    public bool HasFieldsInMemory
+    {
+        get
+        {
+            foreach (var entry in _objects)
+                if (entry.Fields is { IsShared: false, IsSpilled: false }) return true;
+            return false;
+        }
+    }
 
     /// <summary>
     /// An entry of <see cref="TakeRig"/>/<see cref="TakeScene"/>. Animation tracks are held shallowly
     /// (their field values shared, not copied): no rig or scene edit changes a key in place, and
-    /// <see cref="Trim"/> drops every track an edit left alone before the record is kept, deep-copying
+    /// <see cref="Trim"/> drops every track an edit left alone before the record is kept, encoding
     /// the few it did change. Copying every key of a large scene twice per edit was most of the time
     /// and memory of a rig edit.
     /// </summary>
-    private static (AktObject, AktStruct, AktObject[], bool) SharingEntry(AktObject o)
-    {
-        if (!o.TypeName.StartsWith("class CAnimTrack", StringComparison.Ordinal))
-            return (o, Copy(o, shareLargeArrays: true), o.Children.ToArray(), false);
-        var fields = new AktStruct(o.TypeName);
-        fields.Fields.AddRange(o.Fields);
-        return (o, fields, o.Children.ToArray(), true);
-    }
-
-    private EditSnapshot(EditSnapshot source, (AktObject, AktStruct, AktObject[], bool)[] objects)
-    {
-        Owner = source.Owner;
-        RestPose = source.RestPose;
-        _objects = objects;
-        _weights = source._weights;
-        _hidden = source._hidden;
-        _pointOfView = source._pointOfView;
-        _hiddenCounter = source._hiddenCounter;
-        _shareLargeArrays = source._shareLargeArrays;
-    }
+    private static Entry SharingEntry(AktObject o) =>
+        o.TypeName.StartsWith("class CAnimTrack", StringComparison.Ordinal)
+            ? new Entry(o, AktFieldSnapshot.CaptureShared(o), o.Children.ToArray())
+            : Encoded(o, shareLargeArrays: true);
 
     /// <summary>
     /// The two sides of a committed edit reduced to the objects it changed: an object kept on both
     /// sides with equal fields and children is dropped (undo is linear, so it is already in that
-    /// state whenever this record is restored), and shared track entries that stay are deep-copied
-    /// so a later key edit cannot reach them. Only rig and scene snapshots are trimmed.
+    /// state whenever this record is restored), and shared track entries that stay are encoded so a
+    /// later key edit cannot reach them - except, in a whole-document snapshot, tracks the edit
+    /// removed from the document, which nothing can reach. Only rig and scene snapshots are trimmed.
     /// </summary>
     public static (EditSnapshot Before, EditSnapshot After) Trim(EditSnapshot before, EditSnapshot after)
     {
-        if (!before._shareLargeArrays || !after._shareLargeArrays) return (before, after);
+        if (!before._shareLargeArrays || !after._shareLargeArrays || before._released || after._released) return (before, after);
         var afterByTarget = new Dictionary<AktObject, int>(ReferenceEqualityComparer.Instance);
         for (int i = 0; i < after._objects.Length; i++) afterByTarget.TryAdd(after._objects[i].Target, i);
         var keepAfter = new bool[after._objects.Length];
         Array.Fill(keepAfter, true);
-        var keptBefore = new List<(AktObject, AktStruct, AktObject[], bool)>();
+        var keptBefore = new List<Entry>();
         foreach (var entry in before._objects)
         {
             if (afterByTarget.TryGetValue(entry.Target, out int j))
             {
                 var other = after._objects[j];
-                if (entry.Children.SequenceEqual(other.Children) &&
-                    FieldsEqual(entry.Fields, other.Fields, entry.Shared && other.Shared))
+                if (entry.Children!.SequenceEqual(other.Children!) && entry.Fields!.ContentEquals(other.Fields!))
                 {
                     keepAfter[j] = false;
                     continue;
                 }
+                keptBefore.Add(Unshare(entry));
             }
-            keptBefore.Add(Unshare(entry));
+            else
+            {
+                keptBefore.Add(before._wholeDocument ? entry : Unshare(entry));
+            }
         }
-        var keptAfter = new List<(AktObject, AktStruct, AktObject[], bool)>();
+        var keptAfter = new List<Entry>();
         for (int j = 0; j < after._objects.Length; j++)
             if (keepAfter[j]) keptAfter.Add(Unshare(after._objects[j]));
         return (new EditSnapshot(before, keptBefore.ToArray()), new EditSnapshot(after, keptAfter.ToArray()));
     }
 
+    private static Entry Unshare(Entry entry) =>
+        entry.Shared ? new Entry(entry.Target, entry.Fields!.Encode(shareLargeArrays: true), entry.Children!) : entry;
+
     /// <summary>The number of objects the snapshot restores (for tests and measurements).</summary>
     public int ObjectCount => _objects.Length;
 
-    private static (AktObject, AktStruct, AktObject[], bool) Unshare((AktObject Target, AktStruct Fields, AktObject[] Children, bool Shared) entry) =>
-        entry.Shared ? (entry.Target, entry.Fields.Clone(true), entry.Children, false) : entry;
-
-    private static bool FieldsEqual(AktStruct a, AktStruct b, bool byReference)
+    /// <summary>
+    /// The managed memory this snapshot holds on its own (what <see cref="EditHistory.MemoryBudget"/>
+    /// is measured in): the encoded fields that are not spilled, the entries and child lists, and
+    /// the weight arrays. Shared values and bulk arrays belong to the document and are not counted.
+    /// </summary>
+    public long EstimatedBytes
     {
-        if (a.TypeName != b.TypeName || a.FieldCount != b.FieldCount) return false;
-        for (int i = 0; i < a.FieldCount; i++)
+        get
         {
-            if (!ReferenceEquals(a.MemberAt(i), b.MemberAt(i)) && a.MemberAt(i).Name != b.MemberAt(i).Name) return false;
-            var x = a.ValueAt(i);
-            var y = b.ValueAt(i);
-            if (byReference ? !ReferenceEquals(x, y) && !Equals(x, y) : !ValueEquals(x, y)) return false;
-        }
-        return true;
-    }
-
-    private static bool ValueEquals(object? x, object? y)
-    {
-        if (ReferenceEquals(x, y)) return true;
-        if (x is null || y is null) return false;
-        switch (x)
-        {
-            case AktStruct s when y is AktStruct t: return FieldsEqual(s, t, byReference: false);
-            case AktReference r when y is AktReference q: return ReferenceEquals(r.Target, q.Target) && r.RawIndex == q.RawIndex;
-            case List<AktReference> refs when y is List<AktReference> others:
-                if (refs.Count != others.Count) return false;
-                for (int i = 0; i < refs.Count; i++) if (!ValueEquals(refs[i], others[i])) return false;
-                return true;
-            case List<object?> list when y is List<object?> others:
-                if (list.Count != others.Count) return false;
-                for (int i = 0; i < list.Count; i++) if (!ValueEquals(list[i], others[i])) return false;
-                return true;
-            case object?[] tuple when y is object?[] others:
-                if (tuple.Length != others.Length) return false;
-                for (int i = 0; i < tuple.Length; i++) if (!ValueEquals(tuple[i], others[i])) return false;
-                return true;
-            case AktMap: return false;
-            case float[] f when y is float[] g: return f.AsSpan().SequenceEqual(g);
-            case Array a when y is Array b:
-                if (a.Length != b.Length || a.GetType() != b.GetType()) return false;
-                for (int i = 0; i < a.Length; i++) if (!Equals(a.GetValue(i), b.GetValue(i))) return false;
-                return true;
-            default: return x.Equals(y);
+            long bytes = ArrayBytes + PointerBytes * (long)_objects.Length;
+            foreach (var entry in _objects)
+            {
+                bytes += ObjectBytes + 24;
+                if (entry.Children is { } children) bytes += ArrayBytes + PointerBytes * children.Length;
+                if (entry.Fields is { } fields) bytes += fields.EstimatedBytes;
+            }
+            foreach (var (_, smooth, rigid) in _weights)
+                bytes += WeightBytes(smooth) + WeightBytes(rigid);
+            foreach (var (_, flags) in _hidden)
+                bytes += ArrayBytes + sizeof(uint) * (long)flags.Length;
+            return bytes;
         }
     }
-    private static AktStruct Copy(AktFieldContainer source) => Copy(source, shareLargeArrays: false);
 
-    private static AktStruct Copy(AktFieldContainer source, bool shareLargeArrays)
+    /// <summary>The encoded bytes of this snapshot that live in a spill file.</summary>
+    public long SpilledBytes
     {
-        var copy = new AktStruct(source.TypeName);
-        copy.Fields.AddRange(source.Fields);
-        return copy.Clone(shareLargeArrays);
+        get
+        {
+            long bytes = 0;
+            foreach (var entry in _objects)
+                if (entry.Fields is { IsSpilled: true } fields) bytes += fields.EncodedLength;
+            return bytes;
+        }
+    }
+
+    // 64-bit CLR object sizes: a header plus method-table pointer is 16 bytes; an array adds its
+    // length (8) before the elements.
+    private const long ObjectBytes = 16, ArrayBytes = 24, PointerBytes = 8;
+
+    private static long WeightBytes(VertexWeight[][] weights)
+    {
+        long bytes = ArrayBytes + PointerBytes * (long)weights.Length;
+        foreach (var w in weights) bytes += ArrayBytes + 8L * (w?.Length ?? 0);   // VertexWeight is (int, float)
+        return bytes;
     }
 }

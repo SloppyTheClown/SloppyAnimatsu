@@ -27,6 +27,27 @@ public sealed class OutlinerView : UserControl
     private const string RowFormat = "sloppyanimatsu/outliner-row";
 
     private static readonly IBrush SelectionBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+
+    // Every row draws the same handful of glyphs; a large scene has hundreds of rows, so each path
+    // string is parsed once and its geometry (and each glyph colour's brush) shared by all rows.
+    // Rows are built on the UI thread only, so plain dictionaries are enough.
+    private static readonly Dictionary<string, Geometry> SharedGeometry = new();
+    private static readonly Dictionary<uint, IBrush> SharedGlyphBrush = new();
+    private static readonly IBrush CrossBrush = new Avalonia.Media.Immutable.ImmutableSolidColorBrush(Color.FromRgb(230, 80, 70));
+
+    private static Geometry GeometryOf(string data)
+    {
+        if (!SharedGeometry.TryGetValue(data, out var geometry))
+            SharedGeometry[data] = geometry = Geometry.Parse(data);
+        return geometry;
+    }
+
+    private static IBrush GlyphBrushOf(uint argb)
+    {
+        if (!SharedGlyphBrush.TryGetValue(argb, out var brush))
+            SharedGlyphBrush[argb] = brush = new Avalonia.Media.Immutable.ImmutableSolidColorBrush(Color.FromUInt32(argb));
+        return brush;
+    }
     private static readonly IBrush DropMarkBrush = new SolidColorBrush(Color.FromRgb(90, 170, 255));
     private static readonly IBrush DropFillBrush = new SolidColorBrush(Color.FromArgb(50, 90, 170, 255));
     private readonly Dictionary<Grid, Border> _dropMarks = [];
@@ -94,6 +115,9 @@ public sealed class OutlinerView : UserControl
     /// <summary>A row was dropped on another row: reparent the first object under the second.</summary>
     public event Action<Object3D, Object3D, OutlinerDropPlace>? ReparentRequested;
 
+    /// <summary>A row was dropped on the empty space below the rows: move it to the scene root.</summary>
+    public event Action<Object3D>? SceneRootDropRequested;
+
     /// <summary>Ctrl+A was pressed with the panel focused: every row is now selected.</summary>
     public event Action? AllSelected;
 
@@ -140,6 +164,24 @@ public sealed class OutlinerView : UserControl
     {
         _scroll.Content = _rows;
         Content = _scroll;
+        // The empty space below the rows is the scene root: a mesh dropped there leaves its
+        // character. Rows mark their own drag events handled, so these see only the empty space.
+        _scroll.Background = Brushes.Transparent;
+        DragDrop.SetAllowDrop(_scroll, true);
+        _scroll.AddHandler(DragDrop.DragOverEvent, (_, e) =>
+        {
+            var dragged = Dragged(e.Data);
+            e.DragEffects = dragged != null && OutlinerDrag.RootVerdict(dragged) == OutlinerDropVerdict.Move
+                ? DragDropEffects.Move : DragDropEffects.None;
+            ShowDropMark(null, OutlinerDropPlace.Inside);
+        });
+        _scroll.AddHandler(DragDrop.DropEvent, (_, e) =>
+        {
+            if (Dragged(e.Data) is not { } dragged) return;
+            e.DragEffects = OutlinerDrag.RootVerdict(dragged) == OutlinerDropVerdict.Move
+                ? DragDropEffects.Move : DragDropEffects.None;
+            SceneRootDropRequested?.Invoke(dragged);
+        });
         // Focusable so the Delete and F2 keys reach the panel once a row was clicked.
         Focusable = true;
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
@@ -171,6 +213,8 @@ public sealed class OutlinerView : UserControl
                 DeleteRequested?.Invoke();
                 e.Handled = true;
                 break;
+            // Ctrl+C / Ctrl+V are left to the window, which copies and pastes keys (poses) of the
+            // selection: objects are copied with Duplicate hierarchy only.
             case "RenameRow" when _selectedView != null:
                 BeginRename(_selectedView);
                 e.Handled = true;
@@ -562,8 +606,8 @@ public sealed class OutlinerView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
             Child = new Avalonia.Controls.Shapes.Path
             {
-                Data = Geometry.Parse(style.Glyph),
-                Fill = new SolidColorBrush(Color.FromUInt32(style.Color)),
+                Data = GeometryOf(style.Glyph),
+                Fill = GlyphBrushOf(style.Color),
                 Width = OutlinerStyle.Box,
                 Height = OutlinerStyle.Box,
             },
@@ -706,8 +750,8 @@ public sealed class OutlinerView : UserControl
         foreach (string data in paths)
             canvas.Children.Add(new Avalonia.Controls.Shapes.Path
             {
-                Data = Geometry.Parse(data),
-                Fill = data == Cross ? new SolidColorBrush(Color.FromRgb(230, 80, 70)) : Brushes.Gainsboro,
+                Data = GeometryOf(data),
+                Fill = data == Cross ? CrossBrush : Brushes.Gainsboro,
             });
         var button = new Button
         {

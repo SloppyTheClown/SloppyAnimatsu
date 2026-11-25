@@ -64,7 +64,9 @@ in the world instead of carrying them along; it is off by default.
 ### The Spinner (numeric fields)
 
 The side panel's T/R/S fields show the current object's local transform at the current frame, with
-rotation as ZYX Euler degrees. Typing a value and pressing Enter (or leaving the field), or using
+rotation as ZYX Euler degrees. Translation is in scene units (centimetres) by default;
+**Transform preferences > Translation unit** switches the fields to metres (scene units / 100),
+for display and typing alike - the scene's values do not change. Typing a value and pressing Enter (or leaving the field), or using
 the steppers, applies that channel to every selected controller, each through its own track and its
 own local frame - not the shared gizmo frame - creating a key at the current frame when there is
 none. One undo step. A field is disabled when the object's track does not animate that channel; on
@@ -335,11 +337,13 @@ happens:
 **File > Export…** (Ctrl+E) opens the **Export Settings** window. Every control has hover text.
 
 - **Presets** - Default, Blender, Unity, Godot. The lit one is the target; clicking one changes only
-  the target and leaves every toggle as it is. Blender, Unity and Godot write a plain joint
-  hierarchy, no zero scales and unique clip names, so the rig and clips import directly in those
-  programs; unbaked, they write fitted keys (only the keys the motion needs).
-- **Warnings** - amber lines under the toggles name settings the target reads badly (unbaked for
-  Default, ASCII for Blender) or that do nothing in that combination. Exporting still works.
+  the target and leaves every toggle as it is. Every target writes a plain joint hierarchy, no zero
+  scales and unique clip names, so the rig and clips import directly; unbaked, it writes fitted keys
+  (only the keys the motion needs). **Default** is the most compatible: one binary file with linear
+  keys that Blender, Unity and Godot all import. Unity and Godot can also take curved (tangent) keys,
+  so their targets write fewer keys.
+- **Warnings** - amber lines under the toggles name settings the target reads badly (ASCII for
+  Default or Blender) or that do nothing in that combination. Exporting still works.
 - **Export Scene / Export Selection** - everything, or only the characters that own a selected
   object (the character, a joint or controller, a bound mesh) plus selected unbound meshes.
 - **Only Selected Animations** - the animations selected in the Anim Bank; a selected folder

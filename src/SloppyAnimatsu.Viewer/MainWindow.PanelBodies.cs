@@ -335,18 +335,14 @@ public sealed partial class MainWindow
     {
         EnsureMixerControls();
         _mixerList.MinHeight = 48.0;
-        _stackEnabled.FontSize = 9.0;
-        _stackCycle.FontSize = 9.0;
-        _stackAdditive.FontSize = 9.0;
-        _stackOpacity.FontSize = 9.0;
-        _stackOpacity.ShowButtonSpinner = false;
-        _stackOpacity.Width = 62.0;
-        _stackOpacity.Height = 20.0;
-        ToolTip.SetTip(_stackOpacity, "Opacity of the current stack (percent)");
+        _stackBlend.FontSize = 10.0;
+        _stackBlend.Height = 22.0;
+        _stackBlend.MinHeight = 0.0;
+        ToolTip.SetTip(_stackBlend, "Blend mode of the current stack: Override replaces the stacks below it (weighted by its bar), Additive adds on top of them");
         UniformGrid toolbar = new UniformGrid
         {
-            Columns = 3,
-            Rows = 2,
+            Columns = 6,
+            Rows = 1,
             Margin = new Thickness(3.0, 1.0),
             Children =
             {
@@ -358,15 +354,15 @@ public sealed partial class MainWindow
                 (Control)_mixerDelete
             }
         };
-        WrapPanel properties = new WrapPanel
+        StackPanel properties = new StackPanel
         {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4.0,
             Margin = new Thickness(4.0, 1.0, 4.0, 3.0),
             Children =
             {
-                (Control)_stackEnabled,
-                (Control)_stackCycle,
-                (Control)_stackAdditive,
-                (Control)_stackOpacity
+                new TextBlock { Text = "Blend", FontSize = 10.0, Opacity = 0.75, VerticalAlignment = VerticalAlignment.Center },
+                (Control)_stackBlend
             }
         };
         Grid.SetRow(_mixerList, 0);
@@ -625,8 +621,8 @@ public sealed partial class MainWindow
 
     /// <summary>
     /// The STACKER: key
-    /// creation and deletion in the current stack, its loop toggle and a stack selector. The two
-    /// ghost buttons are left out, since SloppyAnimatsu draws no ghosts.
+    /// creation and deletion in the current stack, its loop toggle, a stack selector and the two
+    /// ghost toggles (MainWindow.Ghosts.cs).
     /// </summary>
     private Control StackerBody()
     {
@@ -666,8 +662,9 @@ public sealed partial class MainWindow
             VerticalAlignment = VerticalAlignment.Top,
             Children = { _stackerKey, _stackerDelete, _stackerLoop, _stackerPrevious, _stackerNext, _stackerSelect }
         };
+        var body = new StackPanel { VerticalAlignment = VerticalAlignment.Top, Children = { grid, GhostButtonsRow() } };
         RefreshAnimationPanels();
-        return grid;
+        return body;
     }
 
     /// <summary>
@@ -697,23 +694,24 @@ public sealed partial class MainWindow
         AnimStack? stack = _timeline.ActiveStack;
         IReadOnlyList<AnimStack> stacks = _timeline.Animation?.Stacks ?? (IReadOnlyList<AnimStack>)Array.Empty<AnimStack>();
         int index = stack == null ? -1 : stacks.ToList().IndexOf(stack);
-        if (_stackerKey != null) _stackerKey.IsEnabled = stack != null;
-        if (_stackerDelete != null) _stackerDelete.IsEnabled = stack != null && _timeline.SelectedKeys.Count > 0;
-        if (_stackerSelect != null) _stackerSelect.IsEnabled = stack != null && stack.Keys.Count > 0;
-        if (_stackerPrevious != null) _stackerPrevious.IsEnabled = index > 0;
-        if (_stackerNext != null) _stackerNext.IsEnabled = index >= 0 && index < stacks.Count - 1;
+        if (_stackerKey != null) DisabledHint.SetEnabled(_stackerKey, stack != null, "an active stack");
+        if (_stackerDelete != null) DisabledHint.SetEnabled(_stackerDelete, stack != null && _timeline.SelectedKeys.Count > 0, "an active stack and selected keys");
+        if (_stackerSelect != null) DisabledHint.SetEnabled(_stackerSelect, stack != null && stack.Keys.Count > 0, "an active stack with keys");
+        if (_stackerPrevious != null) DisabledHint.SetEnabled(_stackerPrevious, index > 0, "a stack before the active one");
+        if (_stackerNext != null) DisabledHint.SetEnabled(_stackerNext, index >= 0 && index < stacks.Count - 1, "a stack after the active one");
         if (_stackerLoop != null)
         {
             _stackerSyncing = true;
-            _stackerLoop.IsEnabled = stack != null;
+            DisabledHint.SetEnabled(_stackerLoop, stack != null, "an active stack");
             _stackerLoop.IsChecked = stack?.IsCycle ?? false;
             _stackerSyncing = false;
         }
+        SyncGhostButtons();
         if (_cycleStepButton != null || _cycleSideButton != null)
         {
             MenuState state = CurrentMenuState();
-            if (_cycleStepButton != null) _cycleStepButton.IsEnabled = state.CanCycleStep;
-            if (_cycleSideButton != null) _cycleSideButton.IsEnabled = state.CanCycleSide && state.SelectionCount > 0;
+            if (_cycleStepButton != null) DisabledHint.SetEnabled(_cycleStepButton, state.CanCycleStep, "an active stack whose keys make one step of a cycle");
+            if (_cycleSideButton != null) DisabledHint.SetEnabled(_cycleSideButton, state.CanCycleSide && state.SelectionCount > 0, "an active stack whose keys make one step of a cycle, and selected joints or controllers");
         }
     }
 

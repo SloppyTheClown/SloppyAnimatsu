@@ -50,6 +50,12 @@ public sealed partial class MainWindow : Window, IViewportEditor
         public CameraAnimated? Animated;
 
         /// <summary>
+        /// The view's own shading and decorator switches while "Decorator display affects all
+        /// views" is off; null while the views share the View &amp; Preferences switches.
+        /// </summary>
+        public ViewDisplay? Display;
+
+        /// <summary>
         /// The view's own orbit camera, used whenever it shows no scene camera. The first view
         /// shares the renderer's camera (saved with the document); the others start as a copy.
         /// </summary>
@@ -440,7 +446,8 @@ public sealed partial class MainWindow : Window, IViewportEditor
 
     private readonly SpinnerField _fovField = new SpinnerField
     {
-        Step = 1f
+        Step = 1f,
+        Requires = "a selected animated camera with a FOV track, in an animation whose active stack is not additive"
     };
 
     private SceneViews? _sceneViews;
@@ -461,31 +468,15 @@ public sealed partial class MainWindow : Window, IViewportEditor
 
     private bool _bankDragging;
 
-    private readonly CheckBox _stackEnabled = new CheckBox
+    // The Mixer's blend mode of the current stack: index 0 Override (flag 8 clear, the default),
+    // 1 Additive (flag 8 set). On/off is the rows' eye, Cycle lives in the Stacker and the weight
+    // is each row's bar, so the Mixer has no other per-stack fields.
+    private readonly ComboBox _stackBlend = new ComboBox
     {
-        Content = "On",
+        ItemsSource = new[] { "Override", "Additive" },
+        SelectedIndex = 0,
+        MinWidth = 90.0,
         VerticalAlignment = VerticalAlignment.Center
-    };
-
-    private readonly CheckBox _stackCycle = new CheckBox
-    {
-        Content = "Cycle",
-        VerticalAlignment = VerticalAlignment.Center
-    };
-
-    private readonly CheckBox _stackAdditive = new CheckBox
-    {
-        Content = "Additive",
-        VerticalAlignment = VerticalAlignment.Center
-    };
-
-    private readonly NumericUpDown _stackOpacity = new NumericUpDown
-    {
-        Width = 110.0,
-        Increment = 5m,
-        Minimum = 0m,
-        Maximum = 100m,
-        FormatString = "0'%'"
     };
 
     private readonly NumericUpDown _frame = new NumericUpDown

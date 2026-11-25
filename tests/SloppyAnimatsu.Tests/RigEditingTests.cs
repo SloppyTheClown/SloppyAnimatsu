@@ -125,6 +125,103 @@ public class RigEditingTests
         AssertRoundtrip(model);
     }
 
+    // ---- duplicating (the TREE's Duplicate hierarchy and Copy / Paste) -------------------------
+
+    [SceneTheory, SceneSamples]
+    public void DuplicateHierarchy_CopiesTheJointAndEverythingBelow_InPlace(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        if (Setup(model) is not var (character, editor)) return;
+        if (FindJoint(character, j => j.Children.OfType<Joint>().Any()) is not { } joint) return;
+        var subtree = Subtree(joint);
+        int before = character.Joints.Count;
+        var worlds = editor.Poses().Select(p => subtree.Select(j => editor.WorldInPose(p, j)).ToArray()).ToList();
+
+        var copies = editor.DuplicateHierarchy([joint]);
+
+        var copy = Assert.Single(copies);
+        Assert.Same(joint.Parent, copy.Parent);
+        Assert.NotEqual(joint.Name, copy.Name);
+        var copied = Subtree(copy);
+        Assert.Equal(subtree.Count, copied.Count);
+        Assert.Equal(before + subtree.Count, character.Joints.Count);
+        var poses = editor.Poses();
+        for (int i = 0; i < poses.Count; i++)
+            for (int j = 0; j < copied.Count; j++)
+                Assert.True(AktMath.MaxDifference(worlds[i][j], editor.WorldInPose(poses[i], copied[j])) < 1e-3,
+                    $"pose {i}: {copied[j].Name} is not where {subtree[j].Name} is");
+        AssertRoundtrip(model);
+    }
+
+    [SceneTheory, SceneSamples]
+    public void DuplicateHierarchy_UnderANewParent_KeepsTheWorldPlacement(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        if (Setup(model) is not var (character, editor)) return;
+        if (FindJoint(character, j => j.Children.OfType<Joint>().Any()) is not { } joint) return;
+        if (FindJoint(character, j => j != joint && !Subtree(joint).Contains(j)) is not { } target) return;
+        var world = editor.Poses().Select(p => editor.WorldInPose(p, joint)).ToArray();
+
+        var copy = Assert.Single(editor.DuplicateHierarchy([joint], target));
+
+        Assert.Same(target, copy.Parent);
+        var poses = editor.Poses();
+        for (int i = 0; i < poses.Count; i++)
+            Assert.True(AktMath.MaxDifference(world[i], editor.WorldInPose(poses[i], copy)) < 1e-3, $"pose {i}: the copy moved");
+        AssertRoundtrip(model);
+    }
+
+    [SceneTheory, SceneSamples]
+    public void DuplicateSceneObjects_CopiesACharacterWithItsRigAnimationsAndMeshes(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        if (model.Scene.Characters.FirstOrDefault(c => c.Joints.Count > 0) is not { } character) return;
+        int characters = model.Scene.Characters.Count();
+        int meshes = character.Meshes.Count();
+
+        var copy = Assert.IsType<Character>(Assert.Single(Outliner.DuplicateSceneObjects(model.Scene, [character])));
+
+        Assert.Equal(characters + 1, model.Scene.Characters.Count());
+        Assert.NotEqual(character.Name, copy.Name);
+        Assert.Same(character.Source.Parent, copy.Source.Parent);
+        Assert.Equal(character.Joints.Count, copy.Joints.Count);
+        Assert.Equal(character.Animations.Count(), copy.Animations.Count());
+        Assert.Equal(meshes, character.Meshes.Count());
+        Assert.Equal(meshes, copy.Meshes.Count());
+        // Nothing in the copy's animations or meshes still points into the original.
+        var original = character.Source.PreOrder().ToHashSet(ReferenceEqualityComparer.Instance);
+        foreach (var animation in copy.Animations)
+            foreach (var stack in animation.Stacks)
+                foreach (var track in stack.Tracks)
+                    if (track.Target is { } target) Assert.DoesNotContain(target.Source, original);
+        AssertRoundtrip(model);
+    }
+
+    [SceneTheory, SceneSamples]
+    public void DuplicateSceneObjects_CopiesAMeshBesideTheOriginal_StillBound(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        if (model.Scene.Meshes.FirstOrDefault(m => m.BindPose?.Character != null) is not { } mesh) return;
+        var character = mesh.BindPose!.Character!;
+        int bound = character.Meshes.Count();
+
+        var copy = Assert.IsType<Mesh>(Assert.Single(Outliner.DuplicateSceneObjects(model.Scene, [mesh])));
+
+        Assert.NotEqual(mesh.Name, copy.Name);
+        Assert.Equal(mesh.Source.Parent!.Children.IndexOf(mesh.Source) + 1, copy.Source.Parent!.Children.IndexOf(copy.Source));
+        Assert.Same(character.Source, copy.BindPose?.Character?.Source);
+        Assert.Equal(bound + 1, character.Meshes.Count());
+        AssertRoundtrip(model);
+    }
+
+    /// <summary>The joint and every joint below it, depth first.</summary>
+    private static List<Joint> Subtree(Joint root)
+    {
+        var list = new List<Joint> { root };
+        foreach (var child in root.Children.OfType<Joint>()) list.AddRange(Subtree(child));
+        return list;
+    }
+
     // ---- reparenting --------------------------------------------------------------------------
 
     [SceneTheory, SceneSamples]
@@ -292,19 +389,19 @@ public class RigEditingTests
         var beforeChildLocal = editor.LocalInPose(pose, child);
         var beforeLocal = editor.LocalInPose(pose, joint);
         var direction = Vector3.Normalize(beforeChildWorld.Translation - beforeWorld.Translation);
-        float scaleY = new Vector3(beforeWorld.M21, beforeWorld.M22, beforeWorld.M23).Length();
+        float scaleZ = new Vector3(beforeWorld.M31, beforeWorld.M32, beforeWorld.M33).Length();
 
         Assert.Equal(1, editor.OrientJoints([joint]));
 
         var afterWorld = editor.WorldInPose(pose, joint);
         var afterLocal = editor.LocalInPose(pose, joint);
         var afterChildWorld = editor.WorldInPose(pose, child);
-        var y = Vector3.Normalize(new Vector3(afterWorld.M21, afterWorld.M22, afterWorld.M23));
-        Assert.True(Vector3.Dot(y, direction) > 0.9999f, $"{y} vs {direction}");
+        var aim = Vector3.Normalize(new Vector3(afterWorld.M31, afterWorld.M32, afterWorld.M33));
+        Assert.True(Vector3.Dot(aim, direction) > 0.9999f, $"{aim} vs {direction}");
         Assert.True(Vector3.Distance(beforeWorld.Translation, afterWorld.Translation) < 1e-3);
         Assert.True(Vector3.Distance(beforeLocal.Translation, afterLocal.Translation) < 1e-5);
-        float afterScaleY = new Vector3(afterWorld.M21, afterWorld.M22, afterWorld.M23).Length();
-        Assert.True(Math.Abs(scaleY - afterScaleY) < 1e-3, $"scale {scaleY} -> {afterScaleY}");
+        float afterScaleZ = new Vector3(afterWorld.M31, afterWorld.M32, afterWorld.M33).Length();
+        Assert.True(Math.Abs(scaleZ - afterScaleZ) < 1e-3, $"scale {scaleZ} -> {afterScaleZ}");
         Assert.True(AktMath.MaxDifference(beforeChildWorld, afterChildWorld) < 1e-3);
         Assert.True(AktMath.MaxDifference(beforeChildLocal, editor.LocalInPose(pose, child)) > 1e-6);
 
@@ -448,10 +545,10 @@ public class RigEditingTests
     [Fact]
     public void JointAlignment_MapsTheSpinnerValuesAndTheFlags()
     {
-        // The shipped file: JointAim = 2, JointUp = 1, Flags = 4. The index order is X, Z, Y, so
-        // the shipped values are Y as the aim and Z as the up axis, and Create Joint aligns.
-        Assert.Equal(JointAxis.Y, JointAlignment.Default.Aim);
-        Assert.Equal(JointAxis.Z, JointAlignment.Default.Up);
+        // SloppyAnimatsu's default: Z as the aim and Y as the 2nd (up) axis, and Create Joint aligns.
+        // The index order is X, Z, Y, so the stored indices are 1 and 2.
+        Assert.Equal(JointAxis.Z, JointAlignment.Default.Aim);
+        Assert.Equal(JointAxis.Y, JointAlignment.Default.Up);
         Assert.True(JointAlignment.Default.AlignOnCreate);
         Assert.Equal(0, (int)JointAxis.X);
         Assert.Equal(1, (int)JointAxis.Z);
@@ -459,8 +556,8 @@ public class RigEditingTests
         Assert.Equal(new JointAlignment(JointAxis.Y, JointAxis.Z), JointAlignment.FromIndices(2, 1));
         Assert.Equal(new JointAlignment(JointAxis.Z, JointAxis.X, true, false, false),
             JointAlignment.FromIndices(4, 0, alignOnCreate: false));
-        Assert.Equal(2, JointAlignment.Default.AimIndex); // Y = 2
-        Assert.Equal(1, JointAlignment.Default.UpIndex); // Z = 1
+        Assert.Equal(1, JointAlignment.Default.AimIndex); // Z = 1
+        Assert.Equal(2, JointAlignment.Default.UpIndex); // Y = 2
         Assert.Equal(5, new JointAlignment(JointAxis.Y, JointAxis.Z, AimNegative: true).AimIndex);
         Assert.Equal(6, new JointAlignment(JointAxis.X, JointAxis.Y, false, true, true).Flags); // 2 + 4
         Assert.Equal(new JointAlignment(JointAxis.Y, JointAxis.Z, true, true, true),
@@ -519,7 +616,7 @@ public class RigEditingTests
         Outliner.ShowAll(model.Scene);
         if (Setup(model) is not var (character, editor)) return;
         var pose = editor.RigPose!;
-        // A straight diagonal chain, so every joint's aim axis (the preference's local Y) has to
+        // A straight diagonal chain, so every joint's aim axis (the default alignment's local Z) has to
         // turn by the same angle: the AutoRigger's phalanx is exactly this shape (hand -> phalanx
         // 1 -> 2 -> 3 at the tip hot point).
         var root = character.Joints.First(j => editor.SlotOf(j) >= 0);
@@ -555,7 +652,7 @@ public class RigEditingTests
         {
             var world = editor.WorldInPose(pose, chain[i]);
             var next = editor.WorldInPose(pose, chain[i + 1]);
-            var aim = Vector3.Normalize(new Vector3(world.M21, world.M22, world.M23));
+            var aim = Vector3.Normalize(new Vector3(world.M31, world.M32, world.M33));
             var aimDirection = Vector3.Normalize(next.Translation - world.Translation);
             Assert.True(Vector3.Dot(aim, aimDirection) > 0.9999f,
                 $"{chain[i].Name}: {aim} vs {aimDirection}");

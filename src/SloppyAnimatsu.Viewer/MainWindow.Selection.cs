@@ -68,16 +68,31 @@ public sealed partial class MainWindow
         RefreshSkinPanel();
     }
 
-    /// <param name="keepContext">The bank's "(rest pose)" row: show the rest pose but stay in the
-    /// current context instead of switching to Rigging.</param>
-    private void SelectAnimation(Animation? animation, float? frame, bool keepContext = false, bool reveal = true)
+    /// <param name="switchContext">Only the context switch (<see cref="SetContext"/>) passes true.
+    /// Everything else - picking another character, a bank row, a new or deleted animation - keeps
+    /// the interface context the user chose: in Rigging the picked animation is only remembered as
+    /// the character's current one (it opens when the user switches to Animation) and the rest pose
+    /// stays on screen; in Animation a character without animations shows its rest pose.</param>
+    private void SelectAnimation(Animation? animation, float? frame, bool reveal = true, bool switchContext = false)
     {
+        // Each animation keeps its own playhead: the one being left stores the frame it was on
+        // (in the scene's per-animation CurrentTime, which a save writes and a reopen reads), so
+        // coming back to it - or reopening the file - lands on that frame again. Not an edit.
+        if (_animation != null && _animation != animation)
+        {
+            _animation.Source.Set("CurrentTime", (int)MathF.Round(_time));
+        }
+        if (!switchContext && animation != null && _pose?.Model.Scene.Context == InterfaceContext.Rigging)
+        {
+            if (_character != null) _character.CurrentAnimation = animation;
+            animation = null;
+        }
         _animation = animation;
         _audio.Stop();
         if (_pose != null)
         {
             _pose.RiggingContext = animation == null;
-            if (animation != null || !keepContext)
+            if (switchContext)
             {
                 _pose.Model.Scene.Context = ((animation != null) ? InterfaceContext.Animation : InterfaceContext.Rigging);
             }
@@ -107,7 +122,7 @@ public sealed partial class MainWindow
         {
             if (_animation != null)
             {
-                SelectAnimation(null, null);
+                SelectAnimation(null, null, switchContext: true);
             }
             else
             {
@@ -120,7 +135,7 @@ public sealed partial class MainWindow
             Animation animation = _character?.CurrentAnimation ?? _character?.Animations.FirstOrDefault();
             if (animation != null)
             {
-                SelectAnimation(animation, null);
+                SelectAnimation(animation, null, switchContext: true);
             }
             else
             {
@@ -154,8 +169,8 @@ public sealed partial class MainWindow
         InterfaceContext context = _pose?.Model.Scene.Context ?? _lastContext;
         _contextLabel.Text = (flag ? ("Context: " + MenuModel.ContextName(context)) : "Context: —");
         _contextButton.Content = (flag ? ("Switch to " + MenuModel.ContextName(MenuModel.OtherContext(context))) : "Switch context");
-        _contextButton.IsEnabled = flag;
         ToolTip.SetTip(_contextButton, "Swap the Rigging and Animation contexts (Tab).");
+        DisabledHint.SetEnabled(_contextButton, flag, "an open scene");
         RefreshCharBank();
     }
 
@@ -203,16 +218,20 @@ public sealed partial class MainWindow
             finally { _outlinerDriving = false; }
             return;
         }
-        // The character row selects the character itself: its gizmo places the whole character
-        // in the scene.
-        if (o is Character placed)
+        // A row that is not a controller (the character itself, a mesh, a group) selects that
+        // object: the TRANSFORM panel shows its own transform, and its gizmo places it (and
+        // everything below it) in the scene.
+        if (o is not Blendshape)
         {
+            var placed = o;
             _selectedAll.Clear();
             _selectedAll.Add(placed);
             _outlinerDriving = true;
             try { SyncSelection(placed); }
             finally { _outlinerDriving = false; }
-            _status.Text = $"Character '{placed.Name}': its Anim Bank is shown; drag the gizmo to move or turn the whole character.";
+            _status.Text = placed is Character
+                ? $"Character '{placed.Name}': its Anim Bank is shown; drag the gizmo to move or turn the whole character."
+                : $"{placed.Name} ({placed.ClassName}): drag the gizmo to move or turn it with everything below it.";
             RefreshProperties();
             RefreshMaterial();
             RefreshMenu();
@@ -580,8 +599,10 @@ public sealed partial class MainWindow
         if (IsSceneDeleteStep(step)) RebuildAfterSceneDelete();
     }
 
+    /// <summary>A step that holds the whole document: a scene delete or a whole-object duplicate.</summary>
     private static bool IsSceneDeleteStep(EditRecord? step) =>
-        step?.Description.StartsWith(SceneDeleteStep, StringComparison.Ordinal) == true;
+        step?.Description is { } d &&
+        (d.StartsWith(SceneDeleteStep, StringComparison.Ordinal) || d.StartsWith(SceneDuplicateStep, StringComparison.Ordinal));
 
     /// <summary>
     /// Undoes or redoes the next step when it is a scene delete. Such a step holds the whole

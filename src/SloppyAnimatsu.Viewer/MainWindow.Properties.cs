@@ -193,9 +193,9 @@ public sealed partial class MainWindow
         {
             bool any = targets.Count > 0;
             // Several objects: the name is a greyed "-"; the boxes show the shared value or "-".
-            _propName.IsEnabled = any && !multiple;
-            _propVisible.IsEnabled = any;
-            _propCompensate.IsEnabled = any;
+            DisabledHint.SetEnabled(_propName, any && !multiple, "exactly one selected object");
+            DisabledHint.SetEnabled(_propVisible, any, "a selected object");
+            DisabledHint.SetEnabled(_propCompensate, any, "a selected object");
             _propName.Text = multiple ? "-" : o?.Name ?? "";
             _propVisibleShown = Common(targets, t => t.IsShown);
             _propCompensateShown = Common(targets, t => t.CompensatesParentScale);
@@ -204,7 +204,7 @@ public sealed partial class MainWindow
             bool ik = any && targets.All(t => t is ControllerIK);
             if (_propTargetSizeRow != null) _propTargetSizeRow.IsVisible = ik;
             var sized = targets.OfType<Controller3D>().ToArray();
-            _propTargetSize.IsEnabled = any && sized.Length == targets.Count && sized.All(c => c.HasTargetRenderSizeRatio);
+            DisabledHint.SetEnabled(_propTargetSize, any && sized.Length == targets.Count && sized.All(c => c.HasTargetRenderSizeRatio), "selected controllers that all have a target size");
             _propTargetSize.Text = sized.Length > 0 && sized.All(c => c.TargetRenderSizeRatio == sized[0].TargetRenderSizeRatio)
                 ? sized[0].TargetRenderSizeRatio.ToString("0.0##", CultureInfo.InvariantCulture)
                 : "";
@@ -218,7 +218,7 @@ public sealed partial class MainWindow
                     ? CameraRatioNames.Select(r => string.Join(":", r.Split(':').Reverse())).ToArray()
                     : CameraRatioNames;
                 _propCameraRatio.SelectedIndex = Math.Clamp(cam.Ratio, 0, CameraRatioNames.Length - 1);
-                _propCameraRatio.IsEnabled = mode != 2;
+                DisabledHint.SetEnabled(_propCameraRatio, mode != 2, "the Landscape or Portrait mode (Square is always 1:1)");
                 _propNearClip.Text = cam.NearClipPlane.ToString("0.###", CultureInfo.InvariantCulture);
                 _propFarClip.Text = cam.FarClipPlane.ToString("0.###", CultureInfo.InvariantCulture);
             }

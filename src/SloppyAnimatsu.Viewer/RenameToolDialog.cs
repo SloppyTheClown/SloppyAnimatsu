@@ -110,7 +110,7 @@ public sealed class RenameToolDialog : Window
         _preview.Text = names.Count == 0
             ? "Select objects in the scene tree or items in the Anim Bank, then come back here."
             : string.Join("\n", names.Zip(after, (b, a) => b == a ? b : $"{b}  ->  {a}").Take(200));
-        _run.IsEnabled = names.Count > 0 && names.Zip(after).Any(p => p.First != p.Second);
+        DisabledHint.SetEnabled(_run, names.Count > 0 && names.Zip(after).Any(p => p.First != p.Second), "selected objects whose names the rules change");
     }
 
     private void Apply()

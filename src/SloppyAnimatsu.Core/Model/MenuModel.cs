@@ -42,7 +42,9 @@ public enum MenuCommand
     AddReverseFoot,
     BindSkin,
     UnbindSkin,
-    SnapLtm,
+    NormalizeScale,
+    NormalizeTranslation,
+    NormalizeRotation,
 
     // Keys
     CopyKeys,
@@ -100,6 +102,8 @@ public enum MenuCommand
     ExpandHierarchy,
     CollapseHierarchy,
     DeleteTreeObject,
+    /// <summary>Copies the selected objects with everything below them, beside the originals.</summary>
+    DuplicateHierarchy,
     // The same menu opened on the panel's blank space.
     ShowAllObjects,
     HideAllObjects,
@@ -171,6 +175,29 @@ public sealed record MenuEntry
     public bool Checked { get; init; }
 
     public bool Enabled { get; init; } = true;
+
+    /// <summary>The hover text: what the row does and what it needs selected, or null for none.</summary>
+    public string? ToolTip { get; init; }
+
+    /// <summary>
+    /// What the row needs before it can run ("selected keys", "the Rigging context"), or null when it
+    /// is always available. Shown on the hover text while the row is greyed out.
+    /// </summary>
+    public string? Requires { get; init; }
+
+    /// <summary>The hover text to show now: <see cref="ToolTip"/>, plus <see cref="Requires"/> while disabled.</summary>
+    public string? HoverText => Enabled ? ToolTip : WithRequirement(ToolTip, Requires);
+
+    /// <summary>
+    /// A disabled control's hover text: its usual text followed by what it needs to work again.
+    /// Every greyed-out control in the app words it this way.
+    /// </summary>
+    public static string? WithRequirement(string? toolTip, string? requires)
+    {
+        if (string.IsNullOrEmpty(requires)) return toolTip;
+        string need = "Needs " + requires + ".";
+        return string.IsNullOrEmpty(toolTip) ? need : toolTip + "\n\n" + need;
+    }
 
     public IReadOnlyList<MenuEntry> Children { get; init; } = [];
 
@@ -333,6 +360,7 @@ public static class MenuModel
     public static IReadOnlyList<MenuEntry> KeyedGroups(MenuState state) =>
     [
         Submenu("_Rig", RigItems(state)),
+        Submenu("S_kin", SkinItems(state)),
         Submenu("_Keys", KeyItems(state).ToArray()),
         Submenu("_Animation", AnimationItems(state).ToArray()),
         Submenu("_Stack", StackItems(state).ToArray()),
@@ -359,33 +387,33 @@ public static class MenuModel
         bool controllers = state.SelectionCount > 0;
         return
         [
-            Item("_Copy keys", MenuCommand.CopyKeys, gesture: Ctrl(0x43), enabled: selected),
+            Item("_Copy keys", MenuCommand.CopyKeys, gesture: Ctrl(0x43), requires: "selected keys", enabled: selected),
             // With no key selected the paste goes to the playhead.
             Item("_Paste keys", MenuCommand.PasteKeys, gesture: Ctrl(0x56),
-                enabled: state.HasStack && state.HasClipboard),
+                requires: "an active stack and copied keys", enabled: state.HasStack && state.HasClipboard),
             Item("Paste keys _after selection", MenuCommand.PasteKeysAfter,
                 gesture: new ShortcutKey(0x56, ShortcutModifiers.Control | ShortcutModifiers.Shift),
-                enabled: selected && state.HasClipboard),
-            Item("_Mirror keys", MenuCommand.MirrorKeys, enabled: selected && controllers),
+                requires: "selected keys and copied keys", enabled: selected && state.HasClipboard),
+            Item("_Mirror keys", MenuCommand.MirrorKeys, requires: "selected keys and a selected object", enabled: selected && controllers),
             MenuEntry.Separator,
-            Item("Mark selected as _extreme", MenuCommand.MarkExtreme, enabled: selected),
-            Item("Mark selected as _breakdown", MenuCommand.MarkBreakdown, enabled: selected),
-            Item("_Remove marks on selected", MenuCommand.RemoveMarks, enabled: selected),
-            Item("Remove marks on _all keys", MenuCommand.RemoveMarksAll, enabled: state.HasStack),
+            Item("Mark selected as _extreme", MenuCommand.MarkExtreme, requires: "selected keys", enabled: selected),
+            Item("Mark selected as _breakdown", MenuCommand.MarkBreakdown, requires: "selected keys", enabled: selected),
+            Item("_Remove marks on selected", MenuCommand.RemoveMarks, requires: "selected keys", enabled: selected),
+            Item("Remove marks on _all keys", MenuCommand.RemoveMarksAll, requires: "an active stack", enabled: state.HasStack),
             MenuEntry.Separator,
-            Item("Add fade _in", MenuCommand.FadeIn, enabled: selected),
-            Item("Add fade _out", MenuCommand.FadeOut, enabled: selected),
-            Item("Remove fade i_n", MenuCommand.RemoveFadeIn, enabled: selected),
-            Item("Remove fade ou_t", MenuCommand.RemoveFadeOut, enabled: selected),
+            Item("Add fade _in", MenuCommand.FadeIn, requires: "selected keys", enabled: selected),
+            Item("Add fade _out", MenuCommand.FadeOut, requires: "selected keys", enabled: selected),
+            Item("Remove fade i_n", MenuCommand.RemoveFadeIn, requires: "selected keys", enabled: selected),
+            Item("Remove fade ou_t", MenuCommand.RemoveFadeOut, requires: "selected keys", enabled: selected),
             MenuEntry.Separator,
-            Item("Move keys _earlier", MenuCommand.MoveKeysEarlier, gesture: Ctrl(0x25), enabled: selected),
-            Item("Move keys _later", MenuCommand.MoveKeysLater, gesture: Ctrl(0x27), enabled: selected),
+            Item("Move keys _earlier", MenuCommand.MoveKeysEarlier, gesture: Ctrl(0x25), requires: "selected keys", enabled: selected),
+            Item("Move keys _later", MenuCommand.MoveKeysLater, gesture: Ctrl(0x27), requires: "selected keys", enabled: selected),
             MenuEntry.Separator,
-            Item("_Widen gap before", MenuCommand.WidenGap, gesture: Key(0xBB), enabled: selected),
-            Item("_Narrow gap before", MenuCommand.NarrowGap, gesture: Key(0xBD), enabled: selected),
+            Item("_Widen gap before", MenuCommand.WidenGap, gesture: Key(0xBB), requires: "selected keys", enabled: selected),
+            Item("_Narrow gap before", MenuCommand.NarrowGap, gesture: Key(0xBD), requires: "selected keys", enabled: selected),
             MenuEntry.Separator,
-            Item("Change _Space…", MenuCommand.ChangeSpace, enabled: selected && controllers),
-            Item("Toggle space_able", MenuCommand.ToggleSpaceable, enabled: controllers),
+            Item("Change _Space…", MenuCommand.ChangeSpace, requires: "selected keys and a selected object", enabled: selected && controllers),
+            Item("Toggle space_able", MenuCommand.ToggleSpaceable, requires: "a selected object", enabled: controllers),
         ];
     }
 
@@ -393,9 +421,9 @@ public static class MenuModel
     public static IReadOnlyList<MenuEntry> TimelineEmptyItems(MenuState state) =>
     [
         Item("Create Key", MenuCommand.TimelineCreateKey, gesture: Gesture(state, "StackerCreateKey", Key(0x4B)),
-            enabled: state.HasStack),
+            requires: "an active stack", enabled: state.HasStack),
         Item("Paste Key(s)", MenuCommand.TimelinePasteKeys, gesture: Ctrl(0x56),
-            enabled: state.HasStack && state.HasClipboard),
+            requires: "an active stack and copied keys", enabled: state.HasStack && state.HasClipboard),
     ];
 
     /// <summary>The timeline's context menu on a key: the selected keys (the clicked one joins them).
@@ -405,52 +433,52 @@ public static class MenuModel
         bool selected = state.HasKeySelection;
         return
         [
-            Item("Remove Key(s)", MenuCommand.DeleteKeys, gesture: Key(0x2E), enabled: selected),
-            Item("Copy Key(s)", MenuCommand.CopyKeys, gesture: Ctrl(0x43), enabled: selected),
+            Item("Remove Key(s)", MenuCommand.DeleteKeys, gesture: Key(0x2E), requires: "selected keys", enabled: selected),
+            Item("Copy Key(s)", MenuCommand.CopyKeys, gesture: Ctrl(0x43), requires: "selected keys", enabled: selected),
             MenuEntry.Separator,
             state.SelectedKeysHaveFadeIn
-                ? Item("Remove Fade-in", MenuCommand.RemoveFadeIn, enabled: selected)
-                : Item("Create Fade-in", MenuCommand.FadeIn, enabled: selected),
+                ? Item("Remove Fade-in", MenuCommand.RemoveFadeIn, requires: "selected keys", enabled: selected)
+                : Item("Create Fade-in", MenuCommand.FadeIn, requires: "selected keys", enabled: selected),
             state.SelectedKeysHaveFadeOut
-                ? Item("Remove Fade-out", MenuCommand.RemoveFadeOut, enabled: selected)
-                : Item("Create Fade-out", MenuCommand.FadeOut, enabled: selected),
+                ? Item("Remove Fade-out", MenuCommand.RemoveFadeOut, requires: "selected keys", enabled: selected)
+                : Item("Create Fade-out", MenuCommand.FadeOut, requires: "selected keys", enabled: selected),
         ];
     }
 
     /// <summary>The animation list's commands, as the Animation menu and the list's context menu.</summary>
     public static IReadOnlyList<MenuEntry> AnimationItems(MenuState state) =>
     [
-        Item("_New animation", MenuCommand.NewAnimation, enabled: state.HasAnimBank),
-        Item("_Copy animation", MenuCommand.CopyAnimation, enabled: state.HasAnimation),
+        Item("_New animation", MenuCommand.NewAnimation, requires: "an open scene with an Anim Bank", enabled: state.HasAnimBank),
+        Item("_Copy animation", MenuCommand.CopyAnimation, requires: "a selected animation", enabled: state.HasAnimation),
         // One Delete (also the Delete key in the bank) for whatever rows are selected: animations,
         // and folders with everything inside them.
-        Item("_Delete", MenuCommand.DeleteAnimation, enabled: state.HasAnimation || state.HasBankFolder),
+        Item("_Delete", MenuCommand.DeleteAnimation, requires: "a selected animation or folder", enabled: state.HasAnimation || state.HasBankFolder),
         MenuEntry.Separator,
-        Item("_Rename animation…", MenuCommand.RenameAnimation, enabled: state.HasAnimation),
-        Item("Rename _Tool…", MenuCommand.RenameTool, enabled: state.HasAnimation || state.HasBankFolder),
+        Item("_Rename animation…", MenuCommand.RenameAnimation, requires: "a selected animation", enabled: state.HasAnimation),
+        Item("Rename _Tool…", MenuCommand.RenameTool, requires: "a selected animation or folder", enabled: state.HasAnimation || state.HasBankFolder),
         MenuEntry.Separator,
-        Item("New _folder", MenuCommand.NewFolder, enabled: state.HasAnimBank),
-        Item("Rena_me folder…", MenuCommand.RenameFolder, enabled: state.HasBankFolder),
+        Item("New _folder", MenuCommand.NewFolder, requires: "an open scene with an Anim Bank", enabled: state.HasAnimBank),
+        Item("Rena_me folder…", MenuCommand.RenameFolder, requires: "a selected folder", enabled: state.HasBankFolder),
         MenuEntry.Separator,
         // Cycle Step / Cycle Side are the Cyclemaker panel's buttons only, not bank menu rows.
         // The app runs the action from its menus and picks the pair in the dialog; the scene is the
         // only requirement (a scene with fewer than two characters reports the message).
-        Item("_Retarget animations…", MenuCommand.RetargetAnimations, enabled: state.HasScene),
+        Item("_Retarget animations…", MenuCommand.RetargetAnimations, requires: "an open scene", enabled: state.HasScene),
     ];
 
     /// <summary>The Mixer's commands, as the Stack menu.</summary>
     public static IReadOnlyList<MenuEntry> StackItems(MenuState state) =>
     [
-        Item("_New stack from selection", MenuCommand.NewStack, enabled: state.HasAnimation),
-        Item("_Duplicate stack", MenuCommand.DuplicateStack, enabled: state.HasStack),
+        Item("_New stack from selection", MenuCommand.NewStack, requires: "a shown animation", enabled: state.HasAnimation),
+        Item("_Duplicate stack", MenuCommand.DuplicateStack, requires: "an active stack", enabled: state.HasStack),
         Item("De_lete stack", MenuCommand.DeleteStack,
-            enabled: state.HasAnimation && state.HasStack && state.StackCount > 1),
+            requires: "an active stack and at least one other stack in the animation", enabled: state.HasAnimation && state.HasStack && state.StackCount > 1),
         MenuEntry.Separator,
-        Item("Move stack _up", MenuCommand.MoveStackUp, enabled: state.StackIndex > 0),
+        Item("Move stack _up", MenuCommand.MoveStackUp, requires: "an active stack that is not the first", enabled: state.StackIndex > 0),
         Item("Move stack do_wn", MenuCommand.MoveStackDown,
-            enabled: state.StackIndex >= 0 && state.StackIndex < state.StackCount - 1),
+            requires: "an active stack that is not the last", enabled: state.StackIndex >= 0 && state.StackIndex < state.StackCount - 1),
         MenuEntry.Separator,
-        Item("_Rename stack…", MenuCommand.RenameStack, enabled: state.HasStack),
+        Item("_Rename stack…", MenuCommand.RenameStack, requires: "an active stack", enabled: state.HasStack),
     ];
 
     /// <summary>
@@ -466,13 +494,13 @@ public static class MenuModel
         if (!state.HasTreeRow)
             return
             [
-                Item("_Show all", MenuCommand.ShowAllObjects, enabled: state.HasScene),
-                Item("_Hide all", MenuCommand.HideAllObjects, enabled: state.HasScene),
+                Item("_Show all", MenuCommand.ShowAllObjects, requires: "an open scene", enabled: state.HasScene),
+                Item("_Hide all", MenuCommand.HideAllObjects, requires: "an open scene", enabled: state.HasScene),
                 MenuEntry.Separator,
-                Item("Select _all", MenuCommand.SelectAllTreeRows, enabled: state.HasScene),
+                Item("Select _all", MenuCommand.SelectAllTreeRows, requires: "an open scene", enabled: state.HasScene),
                 MenuEntry.Separator,
-                Item("_Expand all", MenuCommand.ExpandAllTreeRows, enabled: state.HasScene),
-                Item("_Collapse all", MenuCommand.CollapseAllTreeRows, enabled: state.HasScene),
+                Item("_Expand all", MenuCommand.ExpandAllTreeRows, requires: "an open scene", enabled: state.HasScene),
+                Item("_Collapse all", MenuCommand.CollapseAllTreeRows, requires: "an open scene", enabled: state.HasScene),
             ];
         var rows = new List<MenuEntry>
         {
@@ -484,6 +512,11 @@ public static class MenuModel
             Item("_Hide hierarchy", MenuCommand.HideHierarchy),
             MenuEntry.Separator,
             Item("Select hierarchy", MenuCommand.SelectHierarchy),
+            MenuEntry.Separator,
+            Item("D_uplicate hierarchy", MenuCommand.DuplicateHierarchy,
+                toolTip: "Copies the selected objects with everything below them, beside the originals, in "
+                         + "either context. Joints keep their poses and keys; a character takes its rig, Anim "
+                         + "Bank and bound meshes. (Ctrl+C / Ctrl+V copy and paste keys, not objects.)"),
             MenuEntry.Separator,
             Item("_Expand hierarchy", MenuCommand.ExpandHierarchy),
             Item("_Collapse hierarchy", MenuCommand.CollapseHierarchy),
@@ -582,7 +615,7 @@ public static class MenuModel
         Item("_New scene", MenuCommand.NewScene, gesture: Gesture(state, "NewFile", Ctrl(0x4E))),
         Item("_Open…", MenuCommand.Open, gesture: Gesture(state, "OpenFile", Ctrl(0x4F))),
         Item("_Close file", MenuCommand.CloseFile,
-            gesture: Gesture(state, "CloseFile", Ctrl(0x57)), enabled: state.HasDocument),
+            gesture: Gesture(state, "CloseFile", Ctrl(0x57)), requires: "an open document", enabled: state.HasDocument),
         Item("_Save", MenuCommand.Save, gesture: Gesture(state, "SaveFile", Ctrl(0x53))),
         Item("Save _As…", MenuCommand.SaveAs,
             gesture: Gesture(state, "SaveFileAs",
@@ -590,7 +623,7 @@ public static class MenuModel
         MenuEntry.Separator,
         Item("_Import…", MenuCommand.Import),
         Item("_Export…", MenuCommand.Export, gesture: Gesture(state, "ExportMenu", Ctrl(0x45)),
-            enabled: state.HasScene),
+            requires: "an open scene", enabled: state.HasScene),
         MenuEntry.Separator,
         RecentMenu(state),
         MenuEntry.Separator,
@@ -615,54 +648,103 @@ public static class MenuModel
         Item("_Redo", MenuCommand.Redo, gesture: Gesture(state, "Redo", Ctrl(0x59))),
         MenuEntry.Separator,
         Item("_Create key", MenuCommand.CreateKey,
-            gesture: Gesture(state, "StackerCreateKey", Key(0x4B)), enabled: state.HasStack),
+            gesture: Gesture(state, "StackerCreateKey", Key(0x4B)), requires: "an active stack", enabled: state.HasStack),
         Item("_Delete keys", MenuCommand.DeleteKeys,
-            gesture: Gesture(state, "DeleteObject", Key(0x2E)), enabled: state.HasKeySelection),
+            gesture: Gesture(state, "DeleteObject", Key(0x2E)), requires: "selected keys", enabled: state.HasKeySelection),
         Item("Delete keys, _closing the gaps", MenuCommand.DeleteKeysClosingGaps,
-            gesture: new ShortcutKey(0x2E, ShortcutModifiers.Shift), enabled: state.HasKeySelection),
+            gesture: new ShortcutKey(0x2E, ShortcutModifiers.Shift), requires: "selected keys", enabled: state.HasKeySelection),
         MenuEntry.Separator,
         Item(state.HammerRemoves ? "_Remove selection from active stack" : "_Add selection to active stack",
             MenuCommand.Hammer, gesture: Key(0x48),
-            enabled: state.HasStack && state.SelectionCount > 0),
+            requires: "an active stack and a selected object", enabled: state.HasStack && state.SelectionCount > 0),
         MenuEntry.Separator,
         CheckItem("_Keep children fixed", MenuCommand.KeepChildrenFixed, null, state.KeepChildrenFixed),
-        Item("_Mirror pose", MenuCommand.MirrorPose, enabled: !state.HasAnimation && state.SelectionCount > 0),
+        Item("_Mirror pose", MenuCommand.MirrorPose, requires: "a selected object, and the rest pose shown (no animation)", enabled: !state.HasAnimation && state.SelectionCount > 0),
         MenuEntry.Separator,
         Item("Keyboard _shortcuts…", MenuCommand.KeyboardShortcuts),
         Item("_Panel keys…", MenuCommand.PanelKeys),
     ];
 
-    /// <summary>The Rig menu's rows; the RIG ATELIER panel shows the same commands as buttons.</summary>
+    /// <summary>
+    /// The Rig menu's rows; the RIG WORKSHOP panel shows the same commands as buttons (with the
+    /// joint axes as its own controls). Skinning lives in <see cref="SkinItems"/>.
+    /// </summary>
     public static MenuEntry[] RigItems(MenuState state)
     {
         bool rigging = state.Rigging;
         bool joints = rigging && !state.JointEditBlocked;
         return
         [
-            Item("_AutoRigger…", MenuCommand.AutoRigger, enabled: rigging),
+            Item("_AutoRigger…", MenuCommand.AutoRigger, requires: "the Rigging context", enabled: rigging,
+                toolTip: "Build a complete skeleton for the selected character from a template: place the guide points " +
+                         "on the mesh, and the joints, IK and reverse feet are created for you."),
             MenuEntry.Separator,
-            Item("_New joint…", MenuCommand.NewJoint, enabled: joints),
-            Item("_Insert joint above…", MenuCommand.InsertJoint, enabled: joints && state.SelectionIsJoint),
+            Item("_Create joint…", MenuCommand.NewJoint, requires: JointTools, enabled: joints,
+                toolTip: "Create a new joint. Click in the viewport to place it; it becomes a child of the selected joint " +
+                         "(or a new root when nothing is selected), so clicking again builds a chain. " +
+                         "With Auto-orient on, each joint is aimed at the next one along the Aim and 2nd axes."),
+            Item("_Insert joint…", MenuCommand.InsertJoint,
+                requires: JointTools + " and two selected joints (a parent and its child) or one selected child joint", enabled: joints && (state.JointsSelected == 2 || state.SelectionIsJoint),
+                toolTip: "Insert a new joint halfway along a bone. Select two joints where one is the parent of the other " +
+                         "(or just the child joint): the new joint goes between them and the child is re-parented under it."),
             MenuEntry.Separator,
-            Item("_Delete selected joints", MenuCommand.DeleteJoints, enabled: rigging && state.JointsSelected > 0),
-            Item("_Orient selected joints", MenuCommand.OrientJoints, enabled: joints && state.JointsSelected > 0),
+            Item("_Delete selected joints", MenuCommand.DeleteJoints, requires: "the Rigging context and selected joints", enabled: rigging && state.JointsSelected > 0,
+                toolTip: "Delete the selected joints and their animation tracks; meshes skinned to them have their weights remapped. " +
+                         "Unselected child joints are moved to the character root and keep their place on screen."),
+            Item("_Parent selected joints to the last selected", MenuCommand.ParentJoints,
+                requires: JointTools + " and two or more selected joints", enabled: joints && state.JointsSelected >= 2 && state.SelectionIsJoint,
+                toolTip: "Make the last joint you selected the parent of all the other selected joints. " +
+                         "Nothing moves on screen; only the hierarchy changes."),
+            Item("_Unparent selected joints", MenuCommand.UnparentJoints,
+                requires: JointTools + " and a selected joint", enabled: joints && state.JointsSelected > 0,
+                toolTip: "Detach the selected joints from their parents and put them directly under the character. " +
+                         "Nothing moves on screen."),
+            MenuEntry.Separator,
+            Item("_Orient selected joints", MenuCommand.OrientJoints, requires: JointTools + " and a selected joint", enabled: joints && state.JointsSelected > 0,
+                toolTip: "Rotate each selected joint so its Aim axis points at its child joint; the 2nd axis stays as close " +
+                         "as possible to where it pointed before (flip it with the - choices). Children keep their place on screen. " +
+                         "Set the two axes in Joint axes (or the Rig Workshop)."),
             JointAxesMenu(state),
             MenuEntry.Separator,
-            Item("_Parent selected joints to the last selected", MenuCommand.ParentJoints,
-                enabled: joints && state.JointsSelected >= 2 && state.SelectionIsJoint),
-            Item("_Unparent selected joints", MenuCommand.UnparentJoints,
-                enabled: joints && state.JointsSelected > 0),
-            MenuEntry.Separator,
-            Item("Add _IK (two selected joints)", MenuCommand.AddIk, enabled: joints && state.JointsSelected == 2),
+            Item("Add _IK (two selected joints)", MenuCommand.AddIk, requires: JointTools + " and exactly two selected joints (the chain's start, then its end)", enabled: joints && state.JointsSelected == 2,
+                toolTip: "Create an IK controller for the chain between the two selected joints (select the chain's start, " +
+                         "then its end). Moving the IK target then bends the chain to reach it."),
             Item("Add _reverse foot (two selected joints)", MenuCommand.AddReverseFoot,
-                enabled: joints && state.JointsSelected == 2),
+                requires: JointTools + " and exactly two selected joints (the ankle, then the toe)", enabled: joints && state.JointsSelected == 2,
+                toolTip: "Create a reverse-foot controller from the two selected joints (the ankle, then the toe): " +
+                         "it lets the foot roll on its heel, ball and toe while the leg's IK follows."),
             MenuEntry.Separator,
-            Item("Add animated _camera", MenuCommand.AddAnimatedCamera),
+            Item("Add animated _camera", MenuCommand.AddAnimatedCamera,
+                toolTip: "Add a camera rig (a camera and its look-at target) that can be keyed like any controller."),
             MenuEntry.Separator,
-            Item("_Bind skin", MenuCommand.BindSkin, enabled: rigging && !state.PoseRowCurrent),
-            Item("Unbind _skin", MenuCommand.UnbindSkin, enabled: rigging),
-            MenuEntry.Separator,
-            Item("Snap _LTM from the rig pose", MenuCommand.SnapLtm, enabled: rigging),
+            Item("_Normalize scale…", MenuCommand.NormalizeScale, requires: "the Rigging context", enabled: rigging,
+                toolTip: "Set the scale of every character, mesh and group to 1 without changing their size on screen: " +
+                         "the scale is moved into the joint positions, poses, animation keys and mesh vertices. " +
+                         "Joints and controllers keep their own scale."),
+            Item("Normalize _translation…", MenuCommand.NormalizeTranslation, requires: "the Rigging context", enabled: rigging,
+                toolTip: "Set the position of every character, mesh and group to 0 (relative to its parent) without " +
+                         "moving anything on screen: the offset is moved into its children, poses, animation keys and " +
+                         "mesh vertices. Joints, controllers and animated objects keep their position."),
+            Item("Normalize r_otation…", MenuCommand.NormalizeRotation, requires: "the Rigging context", enabled: rigging,
+                toolTip: "Set the rotation of every character, mesh and group to 0 without moving anything on screen: " +
+                         "the rotation is moved into its children, poses, animation keys and mesh vertices and normals. " +
+                         "Joints, controllers, animated objects and objects with a non-uniform scale are left alone."),
+        ];
+    }
+
+    /// <summary>The skinning commands; the SKIN WORKSHOP panel shows them as buttons.</summary>
+    public static MenuEntry[] SkinItems(MenuState state)
+    {
+        bool rigging = state.Rigging;
+        return
+        [
+            Item("_Bind skin", MenuCommand.BindSkin, requires: "the Rigging context with Paint & Check current in the CHAR BANK (not a pose row)", enabled: rigging && !state.PoseRowCurrent,
+                toolTip: "Attach the selected meshes to the selected joints (select the character, its joints and its " +
+                         "meshes, e.g. with Select hierarchy). Each vertex gets automatic weights from the nearest " +
+                         "joints, and the mesh follows the skeleton from then on."),
+            Item("_Unbind skin", MenuCommand.UnbindSkin, requires: "the Rigging context", enabled: rigging,
+                toolTip: "Detach the selected meshes from the skeleton and delete their weights. The meshes go back to " +
+                         "their bind-pose shape and no longer follow the joints."),
         ];
     }
 
@@ -671,10 +753,12 @@ public static class MenuModel
         JointAlignment alignment = state.JointAlignment;
         return Submenu("Joint _axes",
             Submenu("Aim axis", AxisChoices(alignment.Aim, alignment.AimNegative, aim: true).ToArray()),
-            Submenu("Up axis", AxisChoices(alignment.Up, alignment.UpNegative, aim: false).ToArray()),
+            Submenu("2nd axis", AxisChoices(alignment.Up, alignment.UpNegative, aim: false).ToArray()),
             MenuEntry.Separator,
-            CheckItem("Align on create (a chain tip)", MenuCommand.JointAlignOnCreate, null,
-                alignment.AlignOnCreate));
+            CheckItem("Auto-orient on creation", MenuCommand.JointAlignOnCreate, null,
+                alignment.AlignOnCreate,
+                toolTip: "When on, Create joint orients the previous joint of the chain so its Aim axis points at the " +
+                         "new joint (as Orient selected joints does)."));
     }
 
     private static IEnumerable<MenuEntry> AxisChoices(JointAxis chosen, bool chosenNegative, bool aim)
@@ -745,7 +829,7 @@ public static class MenuModel
         new() { Header = header, Kind = MenuEntryKind.Submenu, Children = children };
 
     private static MenuEntry Item(string header, MenuCommand command, string? argument = null,
-        ShortcutKey? gesture = null, bool enabled = true) =>
+        ShortcutKey? gesture = null, bool enabled = true, string? toolTip = null, string? requires = null) =>
         new()
         {
             Header = header,
@@ -753,12 +837,19 @@ public static class MenuModel
             Argument = argument,
             Gesture = gesture,
             Enabled = enabled,
+            ToolTip = toolTip,
+            Requires = requires,
         };
 
+    /// <summary>What the joint-structure tools need (they are greyed outside the Bind/Build Pose rows).</summary>
+    private const string JointTools = "the Rigging context with the Bind Pose or Build Pose row current in the CHAR BANK";
+
     private static MenuEntry CheckItem(string header, MenuCommand command, string? argument, bool isChecked,
-        ShortcutKey? gesture = null, bool enabled = true) =>
+        ShortcutKey? gesture = null, bool enabled = true, string? toolTip = null, string? requires = null) =>
         new()
         {
+            ToolTip = toolTip,
+            Requires = requires,
             Header = header,
             Command = command,
             Argument = argument,

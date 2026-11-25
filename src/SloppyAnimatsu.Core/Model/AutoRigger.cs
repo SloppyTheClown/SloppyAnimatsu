@@ -471,8 +471,8 @@ public sealed class AutoRigger
             skin.Add(NewWeightArray(schema, smooth[p].Select(w => (w.Bone, w.Weight)).ToList()));
             rigidArrays.Add(NewWeightArray(schema, rigid[p].Select(w => (w.Bone, w.Weight)).ToList()));
         }
-        mesh.Source.Set("SkinWeightArray", skin);
-        mesh.Source.Set("RigidSkinWeightArray", rigidArrays);
+        mesh.Source.Set("SkinWeightArray", AktArrayColumn.Pack(schema, "CVertexWeightArray", skin));
+        mesh.Source.Set("RigidSkinWeightArray", AktArrayColumn.Pack(schema, "CVertexWeightArray", rigidArrays));
         return points.Length;
     }
     private static AktStruct NewWeightArray(AktSchema schema, IReadOnlyList<(int Bone, float Weight)> weights)

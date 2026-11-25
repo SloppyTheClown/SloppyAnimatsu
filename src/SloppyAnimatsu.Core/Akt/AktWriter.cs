@@ -20,12 +20,15 @@ public sealed class AktWriter
     private int _objectCount, _written;
 
     private readonly IReadOnlySet<string>? _omit;
+    private readonly IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? _emptied;
 
-    private AktWriter(AktDocument doc, IProgress<double>? progress, IReadOnlySet<string>? omit)
+    private AktWriter(AktDocument doc, IProgress<double>? progress, IReadOnlySet<string>? omit,
+        IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? emptied = null)
     {
         _doc = doc;
         _progress = progress;
         _omit = omit is { Count: > 0 } ? omit : null;
+        _emptied = emptied is { Count: > 0 } ? emptied : null;
     }
 
     /// <summary>The file bytes; <paramref name="progress"/> follows the objects written (0 to 1).</summary>
@@ -35,9 +38,12 @@ public sealed class AktWriter
     /// The file bytes without the class members named in <paramref name="omitMembers"/>: they are
     /// left out of the class schema and of every object, as if the schema never had them (the
     /// .akt-compatible save drops SloppyAnimatsu's own members this way; <see cref="AkeytsuCompatibility"/>).
+    /// The vector members listed for an object in <paramref name="emptiedVectors"/> are written with
+    /// no elements; the document itself is not changed.
     /// </summary>
-    public static byte[] Write(AktDocument doc, IReadOnlySet<string>? omitMembers, IProgress<double>? progress = null) =>
-        new AktWriter(doc, progress, omitMembers).WriteDocument();
+    public static byte[] Write(AktDocument doc, IReadOnlySet<string>? omitMembers, IProgress<double>? progress = null,
+        IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? emptiedVectors = null) =>
+        new AktWriter(doc, progress, omitMembers, emptiedVectors).WriteDocument();
 
     private bool Omitted(string name) => _omit != null && _omit.Contains(name);
 
@@ -86,6 +92,8 @@ public sealed class AktWriter
                   ?? throw new InvalidOperationException($"Class '{obj.TypeName}' is missing from the document schema.");
         b.U32(Atom(def.Name));
         int cursor = 0;
+        IReadOnlySet<string>? emptied = null;
+        _emptied?.TryGetValue(obj, out emptied);
         foreach (var c in def.Chain())
             foreach (var m in c.Members)
             {
@@ -94,7 +102,13 @@ public sealed class AktWriter
                     if (cursor < obj.FieldCount && obj.MemberAt(cursor).Name == m.Name) cursor++;
                     continue;
                 }
-                WriteValue(b, m.Type, Field(obj, ref cursor, c.Key, m.Name));
+                var value = Field(obj, ref cursor, c.Key, m.Name);
+                if (emptied != null && m.Type.Kind == AktTypeKind.Vector && emptied.Contains(m.Name))
+                {
+                    b.U32(0); // a vector with no elements: just its count
+                    continue;
+                }
+                WriteValue(b, m.Type, value);
             }
         if (_progress != null && (++_written & 1023) == 0)
             _progress.Report((double)_written / _objectCount);
@@ -151,9 +165,27 @@ public sealed class AktWriter
                     b.Bytes(bytes);
                     break;
                 }
-                var list = (List<object?>)v!;
+                if (v is AktMrsKeyColumn { IsPacked: true } keys && t.Element!.Kind == AktTypeKind.Polymorphic
+                    && SchemaMatches(keys.Shape))
+                {
+                    WriteKeyColumn(b, keys);
+                    break;
+                }
+                if (v is AktTangentColumn { IsPacked: true } tangents && t.Element!.Kind == AktTypeKind.Polymorphic
+                    && SchemaMatches(tangents.Shape))
+                {
+                    WriteTangentColumn(b, tangents);
+                    break;
+                }
+                if (v is AktArrayColumn { IsPacked: true } arrays && t.Element!.Kind == AktTypeKind.Struct
+                    && SchemaMatches(arrays.Shape, t.Element))
+                {
+                    WriteArrayColumn(b, arrays);
+                    break;
+                }
+                var list = (IList<object?>)v!;
                 b.U32((uint)list.Count);
-                foreach (var e in list) WriteValue(b, t.Element!, e);
+                for (int i = 0; i < list.Count; i++) WriteValue(b, t.Element!, list[i]);
                 break;
             }
             case AktTypeKind.Tuple:
@@ -219,6 +251,151 @@ public sealed class AktWriter
         if (i < 0) throw new InvalidOperationException($"{c.TypeName}: missing value for {ownerKey}.{name}.");
         return c.ValueAt(i);
     }
+
+    // ---- packed key lists -------------------------------------------------------------------
+    // Written straight from their arrays. The bytes equal the generic path's as long as the
+    // document schema lists the element's members in the order the list stores them, which
+    // SchemaMatches checks once per layout; otherwise the generic path writes the views.
+
+    private readonly Dictionary<object, bool> _packedSchemaOk = new(ReferenceEqualityComparer.Instance);
+
+    private bool SchemaMatches(AktMrsShape shape)
+    {
+        if (_packedSchemaOk.TryGetValue(shape, out bool ok)) return ok;
+        ok = ChainMatches(shape.TypeName, shape.Outer);
+        for (int m = 0; ok && m < shape.Outer.Length; m++)
+        {
+            if (shape.Struct[m] is not { } s) continue;
+            var type = shape.Outer[m].Type;
+            var target = shape.Part[m] == MrsPart.Records ? type.Element!.Target! : type.Target!;
+            ok = _doc.Schema.FindStruct(target) is { } def && MembersMatch(def.Members, s.Layout, 0) == s.Layout.Length;
+        }
+        return _packedSchemaOk[shape] = ok;
+    }
+
+    private bool SchemaMatches(AktTangentShape shape)
+    {
+        if (_packedSchemaOk.TryGetValue(shape, out bool ok)) return ok;
+        ok = ChainMatches(shape.TypeName, shape.Outer)
+             && _doc.Schema.FindStruct(shape.Outer[0].Type.Element!.Target!) is { } channel
+             && MembersMatch(channel.Members, shape.Channel, 0) == 1;
+        return _packedSchemaOk[shape] = ok;
+    }
+
+    private bool SchemaMatches(AktArrayShape shape, AktType element)
+    {
+        if (_packedSchemaOk.TryGetValue(shape, out bool ok)) return ok;
+        ok = _doc.Schema.FindStruct(element.Target!) is { } def && def.Name == shape.TypeName
+             && MembersMatch(def.Members, shape.Outer, 0) == shape.Outer.Length;
+        if (ok && shape.Item != null)
+            ok = _doc.Schema.FindStruct(shape.Outer[shape.ListMember].Type.Element!.Target!) is { } item
+                 && item.Name == shape.ItemType && MembersMatch(item.Members, shape.Item, 0) == shape.Item.Length;
+        return _packedSchemaOk[shape] = ok;
+    }
+
+    /// <summary>Each element's members in order: its scalars from the head, its vector as a count and the words.</summary>
+    private static void WriteArrayColumn(Buf b, AktArrayColumn column)
+    {
+        var shape = column.Shape;
+        int n = column.Count;
+        b.U32((uint)n);
+        for (int i = 0; i < n; i++)
+        {
+            var words = column.WordsAt(i);
+            for (int m = 0; m < shape.Outer.Length; m++)
+            {
+                if (m != shape.ListMember)
+                {
+                    b.U32(words[shape.HeadSlot[m]]);
+                    continue;
+                }
+                b.U32((uint)((words.Length - shape.HeadCount) / shape.Stride));
+                for (int k = shape.HeadCount; k < words.Length; k++) b.U32(words[k]);
+            }
+        }
+    }
+
+    /// <summary>Whether the schema's polymorphic chain of <paramref name="typeName"/> declares exactly <paramref name="layout"/>.</summary>
+    private bool ChainMatches(string typeName, AktMemberInfo[] layout)
+    {
+        int at = 0;
+        foreach (string key in AktNames.PolymorphicChain(AktNames.Key(typeName)))
+        {
+            if (_doc.Schema.FindStruct(key) is not { } def) continue;
+            int matched = MembersMatch(def.Members, layout, at);
+            if (matched < 0) return false;
+            at = matched;
+        }
+        return at == layout.Length;
+    }
+
+    /// <summary>Matches <paramref name="members"/> against <paramref name="layout"/> from <paramref name="at"/>; the index after them, or -1.</summary>
+    private static int MembersMatch(List<AktMember> members, AktMemberInfo[] layout, int at)
+    {
+        foreach (var m in members)
+        {
+            if (at >= layout.Length || layout[at].Name != m.Name || layout[at].Type.Spelling != m.Type.Spelling) return -1;
+            at++;
+        }
+        return at;
+    }
+
+    private void WriteKeyColumn(Buf b, AktMrsKeyColumn keys)
+    {
+        var shape = keys.Shape;
+        int n = keys.Count, stride = shape.Stride;
+        uint atom = Atom(shape.TypeName);
+        var floats = keys.FloatData;
+        b.U32((uint)n);
+        for (int i = 0; i < n; i++)
+        {
+            b.U32(atom);
+            int baseAt = i * stride;
+            for (int m = 0; m < shape.Outer.Length; m++)
+            {
+                int at = shape.At[m];
+                // Raw float writes keep NaN payloads, as the generic path does.
+                switch (shape.Part[m])
+                {
+                    case MrsPart.Ref:
+                        var (target, raw) = keys.Ref(at, i);
+                        b.U32((uint)RefIndex(target, raw));
+                        break;
+                    case MrsPart.Value:
+                        for (int f = baseAt + at, end = f + shape.Struct[m]!.Stride; f < end; f++) b.F32(floats[f]);
+                        break;
+                    case MrsPart.Float:
+                        b.F32(floats[baseAt + at]);
+                        break;
+                    case MrsPart.UInt:
+                        b.U32(BitConverter.SingleToUInt32Bits(floats[baseAt + at]));
+                        break;
+                    case MrsPart.Records:
+                        var records = keys.Records(at, i);
+                        b.U32((uint)(records.Length / shape.Struct[m]!.Stride));
+                        foreach (float f in records) b.F32(f);
+                        break;
+                }
+            }
+        }
+    }
+
+    private void WriteTangentColumn(Buf b, AktTangentColumn tangents)
+    {
+        int n = tangents.Count;
+        uint atom = Atom(tangents.Shape.TypeName);
+        b.U32((uint)n);
+        for (int i = 0; i < n; i++)
+        {
+            b.U32(atom);
+            var modes = tangents.ModesAt(i);
+            b.U32((uint)modes.Length);
+            foreach (uint mode in modes) b.U32(mode);
+        }
+    }
+
+    private int RefIndex(AktObject? target, int raw) =>
+        target != null ? (_objectIndex.TryGetValue(target, out int i) ? i : -1) : raw;
 
     private int RefIndex(AktReference? r)
     {

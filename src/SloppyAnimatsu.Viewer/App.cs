@@ -21,6 +21,7 @@ public sealed class App : Application
             AppLog.Crash(e.Exception, "unhandled exception on the UI thread");
         Styles.Add(new FluentTheme());
         ToolTipPassThrough.Install();
+        DisabledHint.Install(this);
         RequestedThemeVariant = ThemeVariant.Dark;
     }
 

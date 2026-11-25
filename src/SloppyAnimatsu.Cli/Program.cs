@@ -86,8 +86,8 @@ internal static partial class Program
           blendshape <file.slopa> [frame] [--animation=name]
                                                 blendshape targets, controllers, channels and the mixed
                                                 values and influences at the frame
-          fbxexport <file.slopa> <out.fbx> [--preset=plain|unity|godot|blender] [--baked|--unbaked]
-                    [--fitted|--stack-keys] [--fit-cubic|--fit-linear] [--plain|--no-plain] [--linear|--step] [--min-scale=x]
+          fbxexport <file.slopa> <out.fbx> [--preset=default|unity|godot|blender|plain] [--baked|--unbaked]
+                    [--fitted|--stack-keys] [--fit-cubic|--fit-linear] [--plain|--no-plain] [--linear|--step] [--min-scale=x] [--scale-factor=x]
                     [--animation=name]... [--character=name]... [--textures=dir]
                                                 write the scene as FBX
           fbximport <file.fbx> <out.slopa> [--no-animations] [--no-skins] [--no-materials] [--keep-keys] [--textures=dir]
@@ -1985,10 +1985,12 @@ internal static partial class Program
             .Select(o => o["--character=".Length..]).ToHashSet();
         string? textures = options.FirstOrDefault(o => o.StartsWith("--textures=", StringComparison.Ordinal))?["--textures=".Length..];
         string? presetName = options.FirstOrDefault(o => o.StartsWith("--preset=", StringComparison.Ordinal))?["--preset=".Length..];
-        var preset = SloppyAnimatsu.Core.Fbx.FbxExportPreset.Plain;
-        if (presetName != null && !Enum.TryParse(presetName, true, out preset))
+        // "default" is the viewer's Default target: the universal preset, one file for every engine.
+        var preset = SloppyAnimatsu.Core.Fbx.FbxExportPreset.Universal;
+        if (presetName != null && !presetName.Equals("default", StringComparison.OrdinalIgnoreCase) &&
+            (!Enum.TryParse(presetName, true, out preset) || int.TryParse(presetName, out _)))
         {
-            Console.Error.WriteLine($"unknown preset '{presetName}' (plain, unity, godot, blender)");
+            Console.Error.WriteLine($"unknown preset '{presetName}' (default, unity, godot, blender, plain)");
             return 2;
         }
         bool? Flag(string on, string off) => options.Contains(on) ? true : options.Contains(off) ? false : null;
@@ -2002,6 +2004,15 @@ internal static partial class Program
         float minScale = minScaleText != null
             ? float.Parse(minScaleText, System.Globalization.CultureInfo.InvariantCulture)
             : defaults.MinimumScale;
+        string? scaleFactorText = options.FirstOrDefault(o => o.StartsWith("--scale-factor=", StringComparison.Ordinal))?["--scale-factor=".Length..];
+        float scaleFactor = 1f;
+        if (scaleFactorText != null &&
+            (!float.TryParse(scaleFactorText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scaleFactor)
+             || !SloppyAnimatsu.Core.Fbx.FbxExportSettings.IsValidScaleFactor(scaleFactor)))
+        {
+            Console.Error.WriteLine($"--scale-factor must be a positive number, not '{scaleFactorText}'");
+            return 2;
+        }
 
         var characters = characterNames.Count > 0
             ? model.Scene.Characters.Where(c => characterNames.Contains(c.Name ?? "")).ToList()
@@ -2019,6 +2030,7 @@ internal static partial class Program
             FittedKeys = fitted,
             FittedCubic = fittedCubic,
             MinimumScale = minScale,
+            ScaleFactor = scaleFactor,
             Characters = characters,
             Animations = animations,
             TextureDirectory = textures,
@@ -3975,7 +3987,7 @@ internal sealed class ValueFormatter(Func<AktObject, int> indexOf, int maxItems)
                     sb.Append('\n').Append(' ', indent + 2).Append(f.Name).Append(" = ").Append(Format(f.Value, indent + 2));
                 return sb.Append('\n').Append(' ', indent).Append('}').ToString();
             }
-            case List<object?> list:
+            case IList<object?> list when list is List<object?> or AktPackedList:
             {
                 var sb = new StringBuilder($"[{list.Count}]");
                 for (int i = 0; i < Math.Min(list.Count, maxItems); i++)

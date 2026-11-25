@@ -407,7 +407,10 @@ public class OutlinerTreeCommandTests
     [Fact]
     public void OutlinerMenu_OffersTheExpectedRowsInOrder()
     {
-        var state = new MenuState { HasScene = true, HasTreeRow = true };
+        var state = new MenuState
+        {
+            HasScene = true, HasTreeRow = true, Context = InterfaceContext.Animation,
+        };
         var rows = MenuModel.OutlinerItems(state);
         Assert.Equal(
             new[]
@@ -415,6 +418,7 @@ public class OutlinerTreeCommandTests
                 MenuCommand.RenameTreeObject, MenuCommand.RenameTool,
                 MenuCommand.ShowHierarchy, MenuCommand.HideHierarchy,
                 MenuCommand.SelectHierarchy,
+                MenuCommand.DuplicateHierarchy,
                 MenuCommand.ExpandHierarchy, MenuCommand.CollapseHierarchy,
                 MenuCommand.DeleteTreeObject,
             },

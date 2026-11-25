@@ -71,6 +71,7 @@ public sealed partial class MainWindow
         {
             _jointAlignment = _preferences.JointAlignment;
         }
+        ApplyTranslationUnit();
         RefreshMenu();
         RefreshMaterial();
         if (_autosaveTimer != null)
@@ -79,6 +80,26 @@ public sealed partial class MainWindow
             _autosaveTimer.Interval = TimeSpan.FromMinutes(_preferences?.AutoSaveMinutes ?? 10);
             _autosaveTimer.Start();
         }
+    }
+
+    /// <summary>
+    /// Shows the TRANSFORM window's translation fields in the preferred unit (scene units or
+    /// metres; the model values are untouched) and names the unit on the Translate group's hover
+    /// text and on each field.
+    /// </summary>
+    private void ApplyTranslationUnit()
+    {
+        TranslationUnit unit = _preferences?.TranslationUnit ?? TranslationUnit.SceneUnits;
+        string tip = "Translate (" + unit.Suffix() + ")";
+        foreach (SpinnerField field in _translateFields)
+        {
+            field.DisplayScale = unit.DisplayScale();
+            // Metres are marked on the number itself ("m1.25") so a value is never mistaken for
+            // scene units; scene units stay bare.
+            field.Prefix = unit == TranslationUnit.Meters ? "m" : "";
+            ToolTip.SetTip(field, tip);
+        }
+        if (_groupButtons != null) ToolTip.SetTip(_groupButtons[0], tip);
     }
 
     private void SetJointAxis(bool aim, JointAxis axis, bool negative)
@@ -132,6 +153,9 @@ public sealed partial class MainWindow
         }
     }
 
+    // The Preferences window's undo history, kept here so it survives closing the window.
+    private readonly PreferenceHistory _preferenceHistory = new();
+
     private async Task OpenPreferencesDialog(string? pageClass = null)
     {
         if (_preferences == null)
@@ -139,7 +163,7 @@ public sealed partial class MainWindow
             _status.Text = "No preferences file is open; start the viewer with --preferences or create " + Preferences.DefaultPath + ".";
             return;
         }
-        await PreferencesDialog.ShowFor(this, _preferences, delegate(bool sceneEdited)
+        await PreferencesDialog.ShowFor(this, _preferences, _preferenceHistory, delegate(string label, bool sceneEdited)
         {
             ApplyPreferenceValues();
             RefreshMenu();
@@ -149,10 +173,11 @@ public sealed partial class MainWindow
             {
                 _dirty = true;
                 UpdateTitle();
-                // Scene-backed sizes (Decorators' joint size, IK target size) redraw at once.
-                _viewport.RequestNextFrameRendering();
             }
-            _status.Text = "Saved " + _preferences.Path + ".";
+            // The Decorators page (scene-backed joint/pivot sizes, alphas, joint display mode,
+            // per-view display) rebuilds the pose and redraws at once.
+            Apply();
+            _status.Text = "Preferences: " + label + ".";
         }, pageClass, (_pose == null) ? ((int?)null) : new int?((int)FrameRate), _pose?.Model.Scene);
     }
 
@@ -206,7 +231,8 @@ public sealed partial class MainWindow
             }
             // SloppyAnimatsu's own Material page (an older profile lacks it), saved so the Preferences
             // dialog, which reads the file, lists it.
-            if (_preferences != null && (_preferences.EnsureMaterialPage() | _preferences.EnsureAnimBankPage()))
+            if (_preferences != null && (_preferences.EnsureMaterialPage() | _preferences.EnsureAnimBankPage()
+                                         | _preferences.EnsureTransformPage()))
             {
                 try { _preferences.Save(); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }

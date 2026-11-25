@@ -539,7 +539,7 @@ public sealed class SkinWeightTable
             throw new InvalidOperationException("The scene schema has no CVertexWeight class; it cannot store skin weights.");
         var array = new List<object?>(_vertices.Length);
         foreach (var weights in _vertices) array.Add(NewWeightArray(schema, weights));
-        _mesh.Source.Set(_field, array);
+        _mesh.Source.Set(_field, AktArrayColumn.Pack(schema, "CVertexWeightArray", array));
     }
 
     private static AktStruct NewWeightArray(AktSchema schema, IReadOnlyList<(int Bone, float Weight)> weights)

@@ -534,20 +534,12 @@ public sealed partial class MainWindow
         AnimStack stack = _timeline.ActiveStack;
         int count = _timeline.SelectedKeys.Count;
         _syncing = true;
-        CheckBox[] array = new CheckBox[3] { _stackEnabled, _stackCycle, _stackAdditive };
-        foreach (CheckBox checkBox in array)
-        {
-            checkBox.IsEnabled = stack != null;
-        }
-        _stackOpacity.IsEnabled = stack != null;
-        _stackEnabled.IsChecked = stack?.IsEnabled ?? false;
-        _stackCycle.IsChecked = stack?.IsCycle ?? false;
-        _stackAdditive.IsChecked = stack?.IsAdditive ?? false;
-        _stackOpacity.Value = ((stack != null) ? new decimal?((decimal)MathF.Round(stack.Opacity * 100f, 1)) : ((decimal?)null));
+        DisabledHint.SetEnabled(_stackBlend, stack != null && stack is not AudioStack, "an active pose stack");
+        _stackBlend.SelectedIndex = stack?.IsAdditive == true ? 1 : 0;
         _syncing = false;
         int num = ((stack == null) ? (-1) : _timeline.SelectedKeys.Where((int k) => k > 0 && k < stack.Keys.Count).DefaultIfEmpty(-1).Min());
         _syncing = true;
-        _gap.IsEnabled = num > 0;
+        DisabledHint.SetEnabled(_gap, num > 0, "a selected key after the first key of the active stack");
         _gap.Value = ((num > 0) ? new decimal?(stack.Keys[num].Time - stack.Keys[num - 1].Time) : ((decimal?)null));
         _syncing = false;
         _keyInfo.Text = ((stack == null) ? "" : (count switch

@@ -330,6 +330,78 @@ public static class Outliner
     }
 
     /// <summary>
+    /// Duplicate hierarchy for whole objects (<see cref="TreeSceneObjects"/>): copies each object
+    /// with everything under it and puts the copy right after the original under the same parent,
+    /// under a name no other object of the scene has. A character's copy takes its rig, poses, Anim
+    /// Bank and rig animation (they live under it) and copies of the meshes bound to it, which are
+    /// rebound to the copied rig. A track elsewhere that animates something inside a copied object
+    /// (another character's animation of a loose mesh, say) gets a twin that animates the copy.
+    /// Returns the copies of <paramref name="objects"/>, in order. A SloppyAnimatsu choice.
+    /// </summary>
+    public static IReadOnlyList<Object3D> DuplicateSceneObjects(Scene scene, IReadOnlyList<Object3D> objects)
+    {
+        var model = scene.Model;
+        var picked = TreeSceneObjects(objects);
+        if (picked.Count == 0) throw new InvalidOperationException("Select the objects to duplicate.");
+        foreach (var o in picked)
+            if (o.Source.Parent == null) throw new InvalidOperationException($"'{o.Name}' has no parent to copy it under.");
+        var roots = picked.ToList();
+        foreach (var character in picked.OfType<Character>())
+            foreach (var mesh in character.Meshes)
+                if (!roots.Any(r => ReferenceEquals(r.Source, mesh.Source))) roots.Add(mesh);
+        var inside = new HashSet<AktObject>(ReferenceEqualityComparer.Instance);
+        foreach (var o in roots)
+            foreach (var node in o.Source.PreOrder()) inside.Add(node);
+        // Keep only the top objects: a bound mesh may sit under its character already.
+        roots = roots.Where(o => !Ancestors(o.Source).Any(inside.Contains)).ToList();
+        var existingCharacters = scene.Characters.ToList();
+
+        var copies = AktObject.CloneHierarchies(roots.Select(o => o.Source).ToList(), out var map);
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var node in model.Document.AllObjects())
+            if (node.Name is { } name) names.Add(name);
+        for (int i = 0; i < roots.Count; i++)
+        {
+            var original = roots[i].Source;
+            var parent = original.Parent!;
+            string name = UniqueSceneName(names, original.Name ?? "Object");
+            names.Add(name);
+            copies[i].Set("Name", name);
+            parent.InsertChild(parent.Children.IndexOf(original) + 1, copies[i]);
+        }
+
+        foreach (var character in existingCharacters)
+        {
+            var animations = character.Animations.ToList();
+            if (character.RigAnimation is { } rig) animations.Add(rig);
+            foreach (var animation in animations.Distinct())
+                foreach (var stack in animation.Stacks)
+                    foreach (var track in stack.Tracks.ToList())
+                    {
+                        // A track inside a copied character was copied with it.
+                        if (inside.Contains(track.Source) || track.Target is not { } target || !map.ContainsKey(target.Source)) continue;
+                        var twin = track.Source.CloneHierarchy();
+                        foreach (var node in twin.PreOrder())
+                            for (int f = 0; f < node.FieldCount; f++) AktObject.Remap(node.ValueAt(f), map);
+                        stack.Source.InsertChild(stack.Source.Children.IndexOf(track.Source) + 1, twin);
+                    }
+        }
+        return picked.Select(o => (Object3D)model.Wrap(map[o.Source])).ToList();
+    }
+
+    /// <summary><paramref name="requested"/> when free, else its stem with the next free "_NN" index (Mesh, Mesh_02, ...).</summary>
+    private static string UniqueSceneName(HashSet<string> names, string requested)
+    {
+        if (!names.Contains(requested)) return requested;
+        string stem = System.Text.RegularExpressions.Regex.Replace(requested, "_[0-9]+$", "");
+        for (int n = 2; ; n++)
+        {
+            string candidate = stem + "_" + n.ToString("00", System.Globalization.CultureInfo.InvariantCulture);
+            if (!names.Contains(candidate)) return candidate;
+        }
+    }
+
+    /// <summary>
     /// Deletes whole objects with their subtrees. A character takes its rig, its poses, its Anim
     /// Bank and rig animation (they live under it) and the meshes bound to it; a deleted object's
     /// tracks leave every surviving character's animations, a surviving character's joints or
@@ -420,7 +492,16 @@ public static class Outliner
                 }
                 return copy ?? s;
             }
-            case List<object?> list:
+            case AktMrsKeyColumn { IsPacked: true } keys:
+            {
+                if (!keys.AnyReference(t => t != null && gone.Contains(t))) return keys;
+                var copy = (AktMrsKeyColumn)keys.CloneList(shareLargeArrays: false);
+                copy.MapReferences((t, raw) => t != null && gone.Contains(t) ? (null, -1) : (t, raw));
+                return copy;
+            }
+            case AktPackedList { IsPacked: true } packed:
+                return packed; // tangent modes: no references
+            case IList<object?> list and not object?[]:
             {
                 List<object?>? copy = null;
                 for (int i = 0; i < list.Count; i++)

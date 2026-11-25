@@ -154,4 +154,31 @@ public class TimelineLayoutTests
                     return (animation, animation.Stacks.Count);
         return null;
     }
+
+    [Fact]
+    public void GapMark_DropsTheNumberThenTheArrowsThenTheLineAsTheGapShrinks()
+    {
+        const double label = 10;
+        var seen = new List<GapMarkKind>();
+        for (double gap = 60; gap >= 0; gap -= 0.5)
+        {
+            var kind = TimelineLayout.GapMark(gap, label);
+            if (seen.Count == 0 || seen[^1] != kind) seen.Add(kind);
+        }
+        Assert.Equal([GapMarkKind.Labelled, GapMarkKind.Arrows, GapMarkKind.Line, GapMarkKind.None], seen);
+        // The number only appears with room for it and an arrowhead plus a shaft on each side.
+        Assert.Equal(GapMarkKind.Arrows, TimelineLayout.GapMark(label + 2 * TimelineLayout.GapArrowHead, label));
+        Assert.Equal(GapMarkKind.Labelled, TimelineLayout.GapMark(40, label));
+        Assert.Equal(GapMarkKind.None, TimelineLayout.GapMark(1, label));
+        // A wider number needs a wider gap.
+        Assert.Equal(GapMarkKind.Arrows, TimelineLayout.GapMark(30, 25));
+    }
+
+    [Theory]
+    [InlineData(0f, 12f, "12")]
+    [InlineData(3f, 4f, "1")]
+    [InlineData(2f, 4.5f, "2.5")]
+    [InlineData(1f, 1.333f, "0.33")]
+    public void FrameDistanceText_IsWholeFramesPlainElseTwoDecimals(float from, float to, string expected) =>
+        Assert.Equal(expected, TimelineLayout.FrameDistanceText(from, to));
 }

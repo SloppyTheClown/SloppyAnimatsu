@@ -71,4 +71,94 @@ public class DecoratorSizesTests
         Assert.Equal(3, plus);
         Assert.Equal(3, minus);
     }
+
+    /// <summary>
+    /// Light joint display: no two joint dots overlap (each shrinks to fit the gap to its nearest
+    /// neighbour, scaled by the high-density factor), and the size batches hold every point and line.
+    /// </summary>
+    [SceneTheory, SceneSamples]
+    public void JointDots_ShrinkInDenseAreas_SoNeighboursDoNotOverlap(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        var character = model.Scene.Characters.First(c => c.Joints.Count() >= 2);
+        var pose = new ScenePose(model);
+        pose.Update(character, null, 0f);
+        AssertBatchesMatchTotals(pose);
+
+        float standardDot = DecoratorSizes.For(model.Scene).Joint;
+        var joints = DotPositions(pose, character);
+        for (int a = 0; a < joints.Count; a++)
+            for (int b = a + 1; b < joints.Count; b++)
+            {
+                float d = Vector3.Distance(joints[a].Position, joints[b].Position);
+                if (d < standardDot * ScenePose.CoincidentFraction) continue;
+                float radii = (joints[a].Scale + joints[b].Scale) / 2f * standardDot;
+                Assert.True(radii <= d + standardDot / 32f,
+                    $"{joints[a].Joint.Name} and {joints[b].Joint.Name}: dots {radii} over a gap of {d}");
+            }
+    }
+
+    [SceneTheory, SceneSamples]
+    public void ClassicJointDisplay_DrawsEveryDotAtTheStandardSize(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        var character = model.Scene.Characters.First(c => c.Joints.Count() >= 2);
+        var pose = new ScenePose(model) { AdaptiveJointSizes = false };
+        pose.Update(character, null, 0f);
+        AssertBatchesMatchTotals(pose);
+        Assert.All(pose.JointBatches, b => Assert.Equal(1f, b.Scale));
+        Assert.All(pose.BoneBatches, b => Assert.Equal(1f, b.Scale));
+    }
+
+    /// <summary>A hand's fingers: joints half a dot apart get small dots, the rest stay standard.</summary>
+    [SceneTheory, SceneSamples]
+    public void CloseFingerJoints_GetHighDensityDots(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        var character = model.Scene.Characters.FirstOrDefault(c =>
+            c.Controllers.OfType<Joint>().Count() >= 2 && PoseEvaluator.RestPose(c, riggingContext: true) != null);
+        if (character == null) return;
+        var pose = new ScenePose(model);
+        pose.Update(character, null, 0f);
+        var lonely = DotPositions(pose, character).OrderByDescending(j => j.Scale).First();
+        float standardDot = DecoratorSizes.For(model.Scene).Joint;
+
+        model.Scene.Source.Set("JointRenderSizeHighDensity", 6f);
+        var editor = new RigEditor(character);
+        var hand = lonely.Joint;
+        var fingers = new List<Joint>();
+        for (int i = 1; i <= 3; i++)
+            fingers.Add(editor.CreateJointAt(hand, lonely.Position + new Vector3(0, standardDot * 0.5f * i, 0), $"Finger{i}"));
+        pose.Update(character, null, 0f);
+
+        AssertBatchesMatchTotals(pose);
+        foreach (var finger in fingers)
+        {
+            float scale = pose.DotScaleOf(finger);
+            Assert.InRange(scale, ScenePose.MinDotScale, 0.5f);
+        }
+        // A larger high-density factor gives larger (still non-overlapping) finger dots.
+        float before = pose.DotScaleOf(fingers[1]);
+        model.Scene.Source.Set("JointRenderSizeHighDensity", model.Scene.JointRenderSizeHighDensity * 2f);
+        pose.Update(character, null, 0f);
+        Assert.True(pose.DotScaleOf(fingers[1]) > before, $"before {before}, after {pose.DotScaleOf(fingers[1])}, factor {model.Scene.JointRenderSizeHighDensity}, std {standardDot}");
+    }
+
+    private static List<(Joint Joint, Vector3 Position, float Scale)> DotPositions(ScenePose pose, Character character)
+    {
+        var result = new List<(Joint, Vector3, float)>();
+        var evaluator = new PoseEvaluator(character, riggingContext: pose.RiggingContext);
+        var worlds = pose.ControllerWorlds;
+        for (int i = 0; i < evaluator.Controllers.Count && i < worlds.Length; i++)
+            if (evaluator.Controllers[i] is Joint j && j.IsShownInScene)
+                result.Add((j, worlds[i].Translation, pose.DotScaleOf(j)));
+        return result;
+    }
+
+    private static void AssertBatchesMatchTotals(ScenePose pose)
+    {
+        Assert.Equal(pose.SkeletonPoints.Length, pose.JointBatches.Sum(b => b.Vertices.Length));
+        Assert.Equal(pose.SkeletonLines.Length, pose.BoneBatches.Sum(b => b.Vertices.Length));
+        Assert.All(pose.JointBatches, b => Assert.InRange(b.Scale, ScenePose.MinDotScale, 1f));
+    }
 }

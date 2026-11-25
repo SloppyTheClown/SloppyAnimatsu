@@ -69,7 +69,8 @@ public sealed partial class MainWindow
         _skinMinWeights[row.Joint] = textBlock2;
         SpinnerField field = new SpinnerField
         {
-            Step = 0.1f
+            Step = 0.1f,
+            Requires = "selected vertices that carry weight on this joint"
         };
         field.Show(row.Weight, row.Editable);
         field.Committed += delegate(float value)

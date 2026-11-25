@@ -242,7 +242,7 @@ public sealed class RetargetDialog : Window
             });
 
         _summary.Text = _session.Summary;
-        _retarget.IsEnabled = _session.CanRetarget && !_running;
+        DisabledHint.SetEnabledBecause(_retarget, _session.CanRetarget && !_running, _running ? "A retarget is running." : _session.Refusal);
         string? problem = _session.Refusal
             ?? (_session.StoreError is { } error ? $"The mapping could not be saved: {error}" : null);
         _problem.Text = problem ?? "";
@@ -435,7 +435,7 @@ public sealed class RetargetDialog : Window
             return;
         }
         _running = true;
-        _retarget.IsEnabled = false;
+        DisabledHint.SetEnabledBecause(_retarget, false, "A retarget is running.");
         _problem.IsVisible = false;
         _progress.Value = 0;
         _progress.IsVisible = _progressText.IsVisible = true;
@@ -456,7 +456,7 @@ public sealed class RetargetDialog : Window
         {
             _running = false;
             _progress.IsVisible = _progressText.IsVisible = false;
-            _retarget.IsEnabled = _session.CanRetarget;
+            DisabledHint.SetEnabledBecause(_retarget, _session.CanRetarget, _session.Refusal);
         }
         if (result is null)
         {

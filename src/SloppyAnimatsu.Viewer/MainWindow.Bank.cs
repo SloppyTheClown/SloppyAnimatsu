@@ -962,22 +962,6 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ToggleStackFlag(CheckBox box, uint flag)
-    {
-        if (_syncing)
-        {
-            return;
-        }
-        AnimStack stack = _timeline.ActiveStack;
-        if (stack != null && (stack.Flags & flag) != 0 != (box.IsChecked == true))
-        {
-            RunBankEdit(delegate(PoseEditSession session)
-            {
-                session.ToggleStackFlag(stack, flag);
-            });
-        }
-    }
-
     private void RefreshAnimations()
     {
         if (_character == null)

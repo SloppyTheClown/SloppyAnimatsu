@@ -101,8 +101,16 @@ internal static class AktSchemaMerge
         switch (type.Kind)
         {
             case AktTypeKind.Vector:
-                if (value is List<object?> list)
-                    foreach (var element in list) FillValue(schema, type.Element!, element);
+                if (value is AktPackedList { IsPacked: true, Count: > 0 } packed)
+                {
+                    // All elements share one layout: filling the first shows whether any member is
+                    // missing. A fill that adds members demotes the list; then fill the rest.
+                    FillValue(schema, type.Element!, packed[0]);
+                    if (!packed.IsPacked)
+                        for (int i = 1; i < packed.Count; i++) FillValue(schema, type.Element!, packed[i]);
+                }
+                else if (value is IList<object?> list)
+                    for (int i = 0; i < list.Count; i++) FillValue(schema, type.Element!, list[i]);
                 break;
             case AktTypeKind.Tuple:
                 if (value is object?[] tuple)

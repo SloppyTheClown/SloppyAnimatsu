@@ -20,7 +20,7 @@ public sealed class Mesh : Object3D
     /// <summary>Control point positions (stored as Vec4f with w = 1).</summary>
     public Vector3[] ControlPoints => Vectors3("VertexArray");
 
-    public IReadOnlyList<MeshPolygon> Polygons =>
+    public IReadOnlyList<MeshPolygon> Polygons => PackedPolygons() ??
         SceneValues.Items(Source, "PolygonArray")
             .Select(p => (AktStruct)p!)
             .Select(p => new MeshPolygon(SceneValues.UInts(p, "IndexArray"), p.Get<uint>("MatIndex")))
@@ -263,7 +263,41 @@ public sealed class Mesh : Object3D
     private Vector3[] Vectors3(string field) =>
         SceneValues.Items(Source, field).Select(v => AktMath.ToVector3((float[])v!)).ToArray();
 
-    private VertexWeight[][] Weights(string field) =>
+    // Packed polygon and weight lists are read straight from their words: walking them as structs
+    // would build (and keep) a view per element.
+    private MeshPolygon[]? PackedPolygons()
+    {
+        if (Source["PolygonArray"] is not AktArrayColumn { IsPacked: true } column || !column.Shape.ScalarItems
+            || column.Shape.ItemKinds[0] != AktTypeKind.UInt || column.Shape.HeadSlotOf("MatIndex") is not (>= 0 and var material)
+            || column.Shape.HeadKinds[material] != AktTypeKind.UInt)
+            return null;
+        var polygons = new MeshPolygon[column.Count];
+        for (int i = 0; i < polygons.Length; i++)
+            polygons[i] = new MeshPolygon(column.ItemsAt(i).ToArray(), column.WordsAt(i)[material]);
+        return polygons;
+    }
+
+    private VertexWeight[][]? PackedWeights(string field)
+    {
+        if (Source[field] is not AktArrayColumn { IsPacked: true } column) return null;
+        var shape = column.Shape;
+        int bone = shape.ItemSlotOf("BoneIndex"), weight = shape.ItemSlotOf("Weight");
+        if (bone < 0 || weight < 0 || shape.ItemKinds[bone] != AktTypeKind.UInt || shape.ItemKinds[weight] != AktTypeKind.Float)
+            return null;
+        int stride = shape.Stride;
+        var result = new VertexWeight[column.Count][];
+        for (int i = 0; i < result.Length; i++)
+        {
+            var words = column.ItemsAt(i);
+            var influences = new VertexWeight[words.Length / stride];
+            for (int k = 0; k < influences.Length; k++)
+                influences[k] = new VertexWeight((int)words[k * stride + bone], BitConverter.UInt32BitsToSingle(words[k * stride + weight]));
+            result[i] = influences;
+        }
+        return result;
+    }
+
+    private VertexWeight[][] Weights(string field) => PackedWeights(field) ??
         SceneValues.Items(Source, field)
             .Select(a => SceneValues.Items((AktStruct)a!, "WeightArray")
                 .Select(w => (AktStruct)w!)

@@ -208,6 +208,8 @@ public sealed partial class MainWindow
             Header = entry.Header,
             IsEnabled = entry.Enabled
         };
+        // A greyed-out row keeps its hover text and adds what it needs to work again.
+        if (entry.HoverText != null) ToolTip.SetTip(menuItem, entry.HoverText);
         if (entry.Checkable)
         {
             menuItem.ToggleType = MenuItemToggleType.CheckBox;
@@ -451,13 +453,17 @@ public sealed partial class MainWindow
             {
                 UnbindSkin();
             },
-            [MenuCommand.SnapLtm] = delegate
+            [MenuCommand.NormalizeScale] = delegate
             {
-                RunRigEdit("Snapped LTM from the rig pose", delegate(RigEditor e)
-                {
-                    e.SyncLtm();
-                    return (Object3D?)null;
-                });
+                NormalizeScale();
+            },
+            [MenuCommand.NormalizeTranslation] = delegate
+            {
+                NormalizeTransform(ReframeParts.Translation);
+            },
+            [MenuCommand.NormalizeRotation] = delegate
+            {
+                NormalizeTransform(ReframeParts.Rotation);
             },
             [MenuCommand.TimelineCreateKey] = delegate
             {
@@ -654,6 +660,10 @@ public sealed partial class MainWindow
             [MenuCommand.CollapseAllTreeRows] = delegate
             {
                 _outliner.SetExpandedAll(false);
+            },
+            [MenuCommand.DuplicateHierarchy] = delegate
+            {
+                DuplicateSelectedHierarchy();
             },
             [MenuCommand.DeleteTreeObject] = delegate
             {

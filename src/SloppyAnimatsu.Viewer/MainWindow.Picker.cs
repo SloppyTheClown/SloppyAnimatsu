@@ -156,7 +156,7 @@ public sealed partial class MainWindow
         // toggle that would enter the mode is off.
         bool hasLayer = _animation != null && _timeline.ActiveStack != null;
         if (!hasLayer) _pickerLayerMode = false;
-        _pickerLayerToggle.IsEnabled = _animation != null;
+        DisabledHint.SetEnabled(_pickerLayerToggle, _animation != null, "an animation");
         _pickerLayerToggle.IsChecked = _pickerLayerMode;
         if (_pose == null)
         {

@@ -17,8 +17,11 @@ public sealed class AktReader
     // Member declarations per class, struct and polymorphic concrete type, shared by every value
     // read with that layout.
     private readonly Dictionary<AktClassDef, AktMemberInfo[]> _classLayouts = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<AktStructDef, AktMemberInfo[]> _structLayouts = new(ReferenceEqualityComparer.Instance);
+    // Keyed by the member's type instance, not its spelling: resolving the spelling to a schema
+    // key builds new strings, and a scene with long animations holds millions of struct values.
+    private readonly Dictionary<AktType, (string Name, AktMemberInfo[] Layout)> _structLayouts = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, (AktMemberInfo[] Layout, AktStructDef[] Defs)> _polyLayouts = new(StringComparer.Ordinal);
+    private readonly Dictionary<AktType, AktArrayShape?> _arrayShapes = new(ReferenceEqualityComparer.Instance);
 
     private AktReader(byte[] data) => _data = data;
 
@@ -72,6 +75,8 @@ public sealed class AktReader
         foreach (var r in _references)
             if (r.RawIndex >= 0 && r.RawIndex < _objects.Count)
                 r.Target = _objects[r.RawIndex];
+        foreach (var column in _keyColumns)
+            if (column.IsPacked) column.ResolveReferences(_objects);
 
         return new AktDocument(_schema, roots)
         {
@@ -220,6 +225,11 @@ public sealed class AktReader
                 if (e.Kind == AktTypeKind.UChar)
                     return Bytes((int)Count(1));
                 uint n = Count(1);
+                if (n > 0 && e.Kind == AktTypeKind.Polymorphic && AktPackedKeys.Enabled
+                    && TryReadPacked((int)n, e) is { } packed)
+                    return packed;
+                if (n > 0 && e.Kind == AktTypeKind.Struct && AktPackedKeys.Enabled && ArrayShape(e) is { } arrayShape)
+                    return ReadArrayColumn((int)n, arrayShape);
                 var list = new List<object?>((int)n);
                 for (int i = 0; i < n; i++) list.Add(ReadValue(e));
                 return list;
@@ -240,31 +250,213 @@ public sealed class AktReader
             }
             case AktTypeKind.Struct:
             {
-                var def = _schema.FindStruct(t.Target!) ?? throw Error($"Struct '{t.Spelling}' is not in the struct schema");
-                if (!_structLayouts.TryGetValue(def, out var layout))
-                {
-                    layout = def.Members.Select(m => AktMemberInfo.Get(def.Name, m.Name, m.TypeName)).ToArray();
-                    _structLayouts[def] = layout;
-                }
-                return ReadStruct(def.Name, layout);
+                var known = StructLayout(t) ?? throw Error($"Struct '{t.Spelling}' is not in the struct schema");
+                return ReadStruct(known.Name, known.Layout);
             }
             case AktTypeKind.Polymorphic:
             {
                 string? concrete = Atom();
                 if (concrete == null)
                     return null;
-                if (!_polyLayouts.TryGetValue(concrete, out var poly))
-                {
-                    var defs = AktNames.PolymorphicChain(AktNames.Key(concrete))
-                        .Select(key => _schema.FindStruct(key)).OfType<AktStructDef>().ToArray();
-                    poly = (defs.SelectMany(d => d.Members.Select(m => AktMemberInfo.Get(d.Name, m.Name, m.TypeName))).ToArray(), defs);
-                    _polyLayouts[concrete] = poly;
-                }
-                return ReadStruct(concrete, poly.Layout);
+                return ReadStruct(concrete, PolymorphicLayout(concrete));
             }
             default:
                 throw Error($"Unsupported member type '{t.Spelling}'");
         }
+    }
+
+    private (string Name, AktMemberInfo[] Layout)? StructLayout(AktType t)
+    {
+        if (_structLayouts.TryGetValue(t, out var known)) return known;
+        if (_schema.FindStruct(t.Target!) is not { } def) return null;
+        known = (def.Name, def.Members.Select(m => AktMemberInfo.Get(def.Name, m.Name, m.TypeName)).ToArray());
+        _structLayouts[t] = known;
+        return known;
+    }
+
+    private AktArrayShape? ArrayShape(AktType element)
+    {
+        if (_arrayShapes.TryGetValue(element, out var shape)) return shape;
+        shape = StructLayout(element) is { } outer ? AktArrayShape.TryCreate(outer.Name, outer.Layout, StructLayout) : null;
+        _arrayShapes[element] = shape;
+        return shape;
+    }
+
+    /// <summary>Reads a vector of <paramref name="shape"/> structs straight into word arrays.</summary>
+    private AktArrayColumn ReadArrayColumn(int n, AktArrayShape shape)
+    {
+        var column = new AktArrayColumn(shape, n);
+        int head = shape.HeadCount, stride = shape.Stride;
+        var words = new uint[head + 64];
+        for (int i = 0; i < n; i++)
+        {
+            int items = 0;
+            for (int m = 0; m < shape.Outer.Length; m++)
+            {
+                if (m != shape.ListMember)
+                {
+                    words[shape.HeadSlot[m]] = U32();
+                    continue;
+                }
+                items = checked((int)Count(stride * 4) * stride);
+                if (words.Length < head + items) Array.Resize(ref words, head + items);
+                RawWords(words.AsSpan(head, items));
+            }
+            column.Append(shape.Compose(words.AsSpan(0, head), words.AsSpan(head, items)));
+        }
+        return column;
+    }
+
+    private void RawWords(Span<uint> dst)
+    {
+        int bytes = dst.Length * 4;
+        Need(bytes);
+        _data.AsSpan(_pos, bytes).CopyTo(System.Runtime.InteropServices.MemoryMarshal.AsBytes(dst));
+        if (!BitConverter.IsLittleEndian)
+            for (int k = 0; k < dst.Length; k++)
+                dst[k] = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(_pos + 4 * k));
+        _pos += bytes;
+    }
+
+    private AktMemberInfo[] PolymorphicLayout(string concrete)
+    {
+        if (!_polyLayouts.TryGetValue(concrete, out var poly))
+        {
+            var defs = AktNames.PolymorphicChain(AktNames.Key(concrete))
+                .Select(key => _schema.FindStruct(key)).OfType<AktStructDef>().ToArray();
+            poly = (defs.SelectMany(d => d.Members.Select(m => AktMemberInfo.Get(d.Name, m.Name, m.TypeName))).ToArray(), defs);
+            _polyLayouts[concrete] = poly;
+        }
+        return poly.Layout;
+    }
+
+    // ---- packed key lists ------------------------------------------------------------------
+    // A vector of polymorphic keys whose type is a struct of floats plus references, or a list
+    // of tangent modes, is read straight into packed arrays (AktPackedKeys.cs) instead of one
+    // struct per element. The bytes read are the same as the generic path's.
+
+    // Per concrete type: its AktMrsShape, its AktTangentShape, or NotPackable.
+    private readonly Dictionary<string, object> _packShapes = new(StringComparer.Ordinal);
+    private static readonly object NotPackable = new();
+    private readonly List<AktMrsKeyColumn> _keyColumns = new();
+
+    private object PackShape(string concrete)
+    {
+        if (_packShapes.TryGetValue(concrete, out var shape)) return shape;
+        var layout = PolymorphicLayout(concrete);
+        shape = (object?)AktMrsShape.TryCreate(concrete, layout, StructLayout)
+                ?? (object?)AktTangentShape.TryCreate(concrete, layout, StructLayout)
+                ?? NotPackable;
+        _packShapes[concrete] = shape;
+        return shape;
+    }
+
+    /// <summary>
+    /// Reads a vector of <paramref name="n"/> polymorphic elements into a packed list when its
+    /// first element's type allows it; null (nothing read) otherwise.
+    /// </summary>
+    private AktPackedList? TryReadPacked(int n, AktType element)
+    {
+        int start = _pos;
+        string? first = Atom();
+        _pos = start;
+        if (first == null) return null;
+        return PackShape(first) switch
+        {
+            AktMrsShape keys => ReadKeyColumn(n, first, keys, element),
+            AktTangentShape tangents => ReadTangentColumn(n, first, tangents, element),
+            _ => null,
+        };
+    }
+
+    private AktPackedList ReadKeyColumn(int n, string concrete, AktMrsShape shape, AktType element)
+    {
+        var column = new AktMrsKeyColumn(shape, n);
+        _keyColumns.Add(column);
+        for (int i = 0; i < n; i++)
+        {
+            int start = _pos;
+            if (Atom() != concrete)
+            {
+                // Another type (or null) inside the list: keep what was read and continue generically.
+                _pos = start;
+                return ContinueGenerically(column, n - i, element);
+            }
+            var floats = column.BeginAppend();
+            for (int m = 0; m < shape.Outer.Length; m++)
+            {
+                int at = shape.At[m];
+                switch (shape.Part[m])
+                {
+                    case MrsPart.Ref:
+                        column.AppendRef(at, (int)U32());
+                        break;
+                    case MrsPart.Value:
+                        RawFloats(floats.Slice(at, shape.Struct[m]!.Stride));
+                        break;
+                    case MrsPart.Float:
+                    case MrsPart.UInt:
+                        // A uint is kept as its raw bits in the float slot.
+                        RawFloats(floats.Slice(at, 1));
+                        break;
+                    case MrsPart.Records:
+                        int recordStride = shape.Struct[m]!.Stride;
+                        int count = (int)Count(recordStride * 4);
+                        if (count == 0) { column.AppendRecords(at, []); break; }
+                        var records = new float[count * recordStride];
+                        RawFloats(records);
+                        column.AppendRecords(at, records);
+                        break;
+                }
+            }
+            column.EndAppend();
+        }
+        return column;
+    }
+
+    /// <summary>Reads <paramref name="dst"/>.Length floats as raw bits, so NaN payloads survive.</summary>
+    private void RawFloats(Span<float> dst)
+    {
+        int bytes = dst.Length * 4;
+        Need(bytes);
+        _data.AsSpan(_pos, bytes).CopyTo(System.Runtime.InteropServices.MemoryMarshal.AsBytes(dst));
+        if (!BitConverter.IsLittleEndian)
+            for (int k = 0; k < dst.Length; k++)
+                dst[k] = BinaryPrimitives.ReadSingleLittleEndian(_data.AsSpan(_pos + 4 * k));
+        _pos += bytes;
+    }
+
+    private AktPackedList ReadTangentColumn(int n, string concrete, AktTangentShape shape, AktType element)
+    {
+        var column = new AktTangentColumn(shape, n);
+        Span<uint> buffer = stackalloc uint[64];
+        for (int i = 0; i < n; i++)
+        {
+            int start = _pos;
+            if (Atom() != concrete)
+            {
+                _pos = start;
+                return ContinueGenerically(column, n - i, element);
+            }
+            int count = (int)Count(4);
+            Span<uint> modes = count <= buffer.Length ? buffer[..count] : new uint[count];
+            for (int k = 0; k < count; k++) modes[k] = U32();
+            column.Append(AktModeInterner.Intern(modes));
+        }
+        return column;
+    }
+
+    /// <summary>Demotes <paramref name="column"/> to a plain list and reads the remaining elements into it.</summary>
+    private AktPackedList ContinueGenerically(AktPackedList column, int remaining, AktType element)
+    {
+        column.Demote();
+        // The demoted keys' references are not resolved yet: hand them to the resolve pass.
+        foreach (var item in column)
+            if (item is AktStruct s)
+                for (int f = 0; f < s.FieldCount; f++)
+                    if (s.ValueAt(f) is AktReference r) _references.Add(r);
+        for (int i = 0; i < remaining; i++) column.Add(ReadValue(element));
+        return column;
     }
 
     private AktStruct ReadStruct(string typeName, AktMemberInfo[] layout)

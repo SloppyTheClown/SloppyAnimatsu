@@ -23,10 +23,14 @@ public enum JointAxis : byte
 /// bits, and the "align" bit (<c>CSkeletonPreferences.Flags</c> bit 2, value 4, on in the shipped
 /// file). <c>JointAimInt</c>/<c>JointUpInt</c> add 3 for the negative axis.
 /// </summary>
-public sealed record JointAlignment(JointAxis Aim = JointAxis.Y, JointAxis Up = JointAxis.Z,
+public sealed record JointAlignment(JointAxis Aim = JointAxis.Z, JointAxis Up = JointAxis.Y,
     bool AimNegative = false, bool UpNegative = false, bool AlignOnCreate = true)
 {
-    /// <summary>The shipped preferences: aim Y, up Z, both positive, Create Joint aligns.</summary>
+    /// <summary>
+    /// SloppyAnimatsu's defaults: aim Z, 2nd (up) Y, both positive, Create Joint aligns. (The
+    /// akeytsu-format template file stores aim Y / up Z; a generated preferences file is rewritten
+    /// to these.)
+    /// </summary>
     public static JointAlignment Default { get; } = new();
 
     /// <summary>Create Joint's click placement without the align branch.</summary>
@@ -319,6 +323,91 @@ public sealed class RigEditor
         // Insert Joint does not check Constraints: it is a structural edit above the selected joint.
         MoveKeepWorld(joint, inserted, syncLtm: false, allowConstrained: true);
         return inserted;
+    }
+
+    // ---- duplicating ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Duplicate hierarchy: copies every selected joint together with all the joints below it.
+    /// A joint whose ancestor is also selected is copied once, as part of that ancestor's copy.
+    /// Each copy goes right after its original under the same parent (or under
+    /// <paramref name="newParent"/>, keeping its world placement), gets a free name
+    /// (<see cref="UniqueControllerName"/>), the original's matrix in every pose, and a copy of the
+    /// original's track in every animation stack, so the copy moves the same way. Only joints are
+    /// copied: IK and reverse-foot controllers, meshes and other non-joint children are left out
+    /// and the copies have no constraint. Returns the copied roots, in selection order.
+    /// </summary>
+    public IReadOnlyList<Joint> DuplicateHierarchy(IEnumerable<Object3D> selection, Object3D? newParent = null)
+    {
+        var picked = selection.OfType<Joint>().Where(j => SlotOf(j) >= 0).Distinct().ToList();
+        var pickedSet = picked.ToHashSet();
+        var roots = picked.Where(j => !Ancestors(j).Any(a => a is Joint p && pickedSet.Contains(p))).ToList();
+        if (roots.Count == 0) throw new InvalidOperationException("Select the joint(s) to duplicate.");
+        if (newParent != null)
+        {
+            EnsureInCharacter(newParent);
+            foreach (var root in roots)
+                if (ReferenceEquals(root, newParent) || IsDescendant(root, newParent))
+                    throw new InvalidOperationException($"{newParent.Name} is inside {root.Name}; paste under another object.");
+        }
+
+        var poses = Poses();
+        var copies = new List<Joint>();
+        foreach (var root in roots)
+        {
+            var host = root.Parent as Object3D ?? root.Parent3D ?? (Object3D)Character;
+            var copy = CopyJointTree(root, host, host.Source.Children.IndexOf(root.Source) + 1, poses);
+            if (newParent != null && !ReferenceEquals(newParent, host))
+                MoveKeepWorld(copy, newParent, syncLtm: true, allowConstrained: true);
+            copies.Add(copy);
+        }
+        return copies;
+    }
+
+    /// <summary>Copies <paramref name="original"/> and its joint children under <paramref name="host"/> at <paramref name="index"/>.</summary>
+    private Joint CopyJointTree(Joint original, Object3D host, int index, IReadOnlyList<CharacterPose> poses)
+    {
+        var (layout, values) = original.Source.CopyFields(deep: true, shareLargeArrays: false);
+        var source = new AktObject(original.Source.TypeName, layout, values);
+        source.Set("Name", UniqueControllerName(Character, original.Name ?? DefaultJointName));
+        source.Set("Constraint", new AktReference(null));
+        host.Source.InsertChild(index < 0 ? host.Source.Children.Count : index, source);
+        AddController(source, isJoint: true);
+        var copy = (Joint)Character.Model.Wrap(source);
+
+        // The original's pose matrices, slot for slot.
+        int from = SlotOf(original), to = SlotOf(copy);
+        foreach (var pose in poses)
+            if (from >= 0 && from < pose.Count && to >= 0 && to < pose.Count)
+                pose.SetMatrix(to, pose.Matrix(from));
+
+        CopyTracks(original, copy);
+        int childIndex = 0;
+        foreach (var child in original.Children.OfType<Joint>().Where(j => SlotOf(j) >= 0).ToList())
+            CopyJointTree(child, copy, childIndex++, poses);
+        return copy;
+    }
+
+    /// <summary>Gives <paramref name="copy"/> a copy of <paramref name="original"/>'s track in every stack (the rig animation's track included).</summary>
+    private void CopyTracks(Joint original, Joint copy)
+    {
+        var animations = Character.Animations.ToList();
+        if (Character.RigAnimation is { } rig) animations.Add(rig);
+        foreach (var animation in animations.Distinct())
+            foreach (var stack in animation.Stacks)
+            {
+                if (stack.TrackFor(original) is not { } track) continue;
+                if (stack.TrackFor(copy) is { } existing) stack.Source.RemoveChild(existing.Source);
+                var trackCopy = track.Source.CloneHierarchy();
+                trackCopy.Set("Target", new AktReference(copy.Source));
+                int at = stack.Source.Children.IndexOf(track.Source);
+                stack.Source.InsertChild(at < 0 ? stack.Source.Children.Count : at + 1, trackCopy);
+            }
+    }
+
+    private static IEnumerable<SceneObject> Ancestors(Object3D o)
+    {
+        for (var p = o.Parent; p != null; p = p.Parent) yield return p;
     }
 
     // ---- IK controllers ----------------------------------------------------------------------
@@ -1253,7 +1342,7 @@ public sealed class RigEditor
         foreach (var mesh in Character.Meshes)
             foreach (string field in new[] { "SkinWeightArray", "RigidSkinWeightArray" })
             {
-                if (mesh.Source[field] is not List<object?> arrays) continue;
+                if (mesh.Source[field] is not IList<object?> arrays) continue;
                 foreach (var entry in arrays)
                 {
                     if (entry is not AktStruct array) continue;
@@ -1284,7 +1373,7 @@ public sealed class RigEditor
                             weight.Set("Weight", weight.Get<float>("Weight") / sum);
                         }
                     weights.Clear();
-                    weights.AddRange(kept);
+                    foreach (var item in kept) weights.Add(item);
                 }
             }
     }

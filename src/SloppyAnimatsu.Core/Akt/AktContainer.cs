@@ -108,7 +108,50 @@ public static class AkeytsuCompatibility
         "the Anim Bank's Added order (when each animation was added)",
         "whether the main view was flat (the view itself is kept)",
         "compression (the file is several times larger)",
+        "the old weights of a mesh moved into another character and not bound there yet (Bind Skin solves new ones)",
     ];
+
+    /// <summary>The weight arrays <see cref="EmptiedFields"/> may empty.</summary>
+    private static readonly IReadOnlySet<string> WeightArrays =
+        new HashSet<string>(StringComparer.Ordinal) { "SkinWeightArray", "RigidSkinWeightArray" };
+
+    /// <summary>
+    /// The vector members a plain .akt save writes empty, per object: the weight arrays of an
+    /// unbound mesh (<c>Skinned</c> false) that sits inside a character other than the one its
+    /// <c>BindPose</c> belongs to. Moving a skinned mesh into another character unbinds it but keeps
+    /// its weights, so a later Bind Skin there can carry them across by joint name; those weights
+    /// still index the old character's joints, and a reader that takes them against the new
+    /// character's joints fails to draw the mesh (always so when the new character has no joints).
+    /// A mesh outside every character keeps its weights, as Unbind Skin leaves it.
+    /// </summary>
+    public static IReadOnlyDictionary<AktObject, IReadOnlySet<string>> EmptiedFields(AktDocument doc)
+    {
+        var emptied = new Dictionary<AktObject, IReadOnlySet<string>>(ReferenceEqualityComparer.Instance);
+        foreach (var obj in doc.AllObjects())
+        {
+            if (!IsA(doc, obj, "CMesh") || IsTrue(obj["Skinned"])) continue;
+            var owner = CharacterOf(doc, obj.Parent);
+            if (owner == null) continue;
+            var boundTo = CharacterOf(doc, (obj["BindPose"] as AktReference)?.Target);
+            if (ReferenceEquals(boundTo, owner)) continue;
+            if (WeightArrays.Any(name => obj[name] is ICollection<object?> { Count: > 0 }))
+                emptied[obj] = WeightArrays;
+        }
+        return emptied;
+    }
+
+    private static bool IsA(AktDocument doc, AktObject obj, string classKey) =>
+        doc.Schema.FindClass(obj.TypeName)?.IsA(classKey) == true;
+
+    private static bool IsTrue(object? value) => value is bool b ? b : value is byte raw && raw != 0;
+
+    /// <summary><paramref name="node"/> or its closest ancestor that is a character; null when none.</summary>
+    private static AktObject? CharacterOf(AktDocument doc, AktObject? node)
+    {
+        for (var o = node; o != null; o = o.Parent)
+            if (IsA(doc, o, "CCharacter")) return o;
+        return null;
+    }
 }
 
 /// <summary>

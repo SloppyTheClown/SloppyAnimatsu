@@ -27,6 +27,12 @@ public enum OutlinerDropVerdict
 
     /// <summary>A constrained object, or one carrying <c>NoReparentFlag</c>, cannot be reparented.</summary>
     Constrained,
+
+    /// <summary>A skinned mesh locked to its skin cannot leave its character (it would have to be unbound).</summary>
+    LockedMesh,
+
+    /// <summary>Only a mesh can be dropped at the scene root, out of every character.</summary>
+    SceneRoot,
 }
 
 
@@ -72,8 +78,13 @@ public static class OutlinerDrag
         // A character is the scene's own root: it has no hierarchy row to be given another parent.
         if (dragged is Character) return OutlinerDropVerdict.Character;
         // A joint moved between characters would leave its controller, pose slot and tracks behind:
-        // a drag only rearranges the hierarchy of one character.
-        if (!ReferenceEquals(OwnerOf(dragged), OwnerOf(target))) return OutlinerDropVerdict.OtherCharacter;
+        // a drag only rearranges the hierarchy of one character. A mesh has none of those, so it may
+        // change character (it is unbound on the way out - SkinEditor.MoveMesh).
+        if (!ReferenceEquals(OwnerOf(dragged), OwnerOf(target)))
+        {
+            if (dragged is not Mesh mesh) return OutlinerDropVerdict.OtherCharacter;
+            if (LeavesLocked(mesh)) return OutlinerDropVerdict.LockedMesh;
+        }
         if (IsDescendantOf(target, dragged)) return OutlinerDropVerdict.Cycle;
         if (dragged.Constraint != null || (dragged.Flags & RigEditor.NoReparentFlag) != 0)
             return OutlinerDropVerdict.Constrained;
@@ -111,6 +122,7 @@ public static class OutlinerDrag
     public static OutlinerDropVerdict Verdict(Object3D dragged, Object3D target, OutlinerDropPlace place)
     {
         if (ReferenceEquals(dragged, target)) return OutlinerDropVerdict.Self;
+        if (DropParent(dragged, target, place) == null) return RootVerdict(dragged);
         var parent = NewParent(target, place);
         if (ReferenceEquals(parent, target)) return Verdict(dragged, target);
         if (dragged is Character) return OutlinerDropVerdict.Character;
@@ -121,6 +133,40 @@ public static class OutlinerDrag
     /// <summary>Whether a drop at <paramref name="place"/> is accepted.</summary>
     public static bool AllowsDrop(Object3D dragged, Object3D target, OutlinerDropPlace place) =>
         Verdict(dragged, target, place) == OutlinerDropVerdict.Move;
+
+    /// <summary>
+    /// Whether <paramref name="o"/>'s row is a top-level row: a character, or an object outside
+    /// every character (a free mesh) whose parent is the scene or one of its folders.
+    /// </summary>
+    public static bool AtSceneRoot(Object3D o) => o is Character || (o.Parent is not Object3D && OwnerOf(o) == null);
+
+    /// <summary>
+    /// The parent a drop moves <paramref name="dragged"/> under, or null for the scene root. Only a
+    /// mesh dropped beside a top-level row (above or below a character or a free mesh) goes to the
+    /// scene root - that is how a mesh is dragged out of its character; every other drop is
+    /// <see cref="NewParent"/>.
+    /// </summary>
+    public static Object3D? DropParent(Object3D dragged, Object3D target, OutlinerDropPlace place) =>
+        dragged is Mesh && place != OutlinerDropPlace.Inside && AtSceneRoot(target) ? null : NewParent(target, place);
+
+    /// <summary>
+    /// What dropping <paramref name="dragged"/> at the scene root (beside a top-level row, or on the
+    /// panel's empty space below the rows) would do: a mesh leaves its character, anything else is
+    /// refused.
+    /// </summary>
+    public static OutlinerDropVerdict RootVerdict(Object3D dragged) => dragged switch
+    {
+        Character => OutlinerDropVerdict.Character,
+        Mesh mesh when LeavesLocked(mesh) => OutlinerDropVerdict.LockedMesh,
+        Mesh => OutlinerDropVerdict.Move,
+        _ => OutlinerDropVerdict.SceneRoot,
+    };
+
+    /// <summary>
+    /// Whether moving <paramref name="mesh"/> out of its character is refused: a skinned mesh whose
+    /// skin is locked, which Unbind Skin also leaves attached.
+    /// </summary>
+    public static bool LeavesLocked(Mesh mesh) => mesh.Skinned && mesh.SkinnedMeshIsLocked && OwnerOf(mesh) != null;
 
     /// <summary>
     /// The character an object belongs to, or null for a scene-level object such as a mesh.

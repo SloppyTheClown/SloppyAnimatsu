@@ -74,7 +74,7 @@ public sealed class FbxExportSettingsTests
             uint expected = target == FbxExportTarget.Default ? FbxExportSettings.DefaultFlags : FbxExportSettings.DefaultFlags & ~0x01u;
             Assert.Equal(expected | (uint)target << 8, FbxExportSettings.For(target).ToFlags());
         }
-        Assert.Equal(FbxExportPreset.Plain, FbxExportSettings.For(FbxExportTarget.Default).Preset);
+        Assert.Equal(FbxExportPreset.Universal, FbxExportSettings.For(FbxExportTarget.Default).Preset);
         Assert.Equal(FbxExportPreset.Blender, FbxExportSettings.For(FbxExportTarget.Blender).Preset);
         Assert.Equal(FbxExportPreset.Unity, FbxExportSettings.For(FbxExportTarget.Unity).Preset);
         Assert.Equal(FbxExportPreset.Godot, FbxExportSettings.For(FbxExportTarget.Godot).Preset);
@@ -91,13 +91,13 @@ public sealed class FbxExportSettingsTests
         foreach (var (target, _, _) in FbxExportSettings.Targets)
             Assert.Empty(FbxExportSettings.For(target).Warnings());
 
-        // Baked on an engine target is fine; unbaked on Default is not.
+        // Baked or not suits every target: unbaked Default writes fitted linear keys.
         Assert.Empty((FbxExportSettings.For(FbxExportTarget.Unity) with { Baked = true }).Warnings());
-        Assert.Contains((FbxExportSettings.For(FbxExportTarget.Default) with { Baked = false }).Warnings(), w => w.Contains("Not baked"));
-        Assert.Empty((FbxExportSettings.For(FbxExportTarget.Default) with { Baked = false, WithoutAnimations = true }).Warnings());
+        Assert.Empty((FbxExportSettings.For(FbxExportTarget.Default) with { Baked = false }).Warnings());
 
-        // Blender cannot read ASCII; the others can.
+        // Blender cannot read ASCII, so neither can a file meant for every program; the others can.
         Assert.Contains((FbxExportSettings.For(FbxExportTarget.Blender) with { Ascii = true }).Warnings(), w => w.Contains("ASCII"));
+        Assert.Contains((FbxExportSettings.For(FbxExportTarget.Default) with { Ascii = true }).Warnings(), w => w.Contains("ASCII"));
         Assert.Empty((FbxExportSettings.For(FbxExportTarget.Unity) with { Ascii = true }).Warnings());
 
         // Options that do nothing in this combination.
@@ -112,6 +112,14 @@ public sealed class FbxExportSettingsTests
         Assert.Single(new FbxExportOptions { Preset = FbxExportPreset.Godot, Baked = true, LinearBakedKeys = false }.CompatibilityWarnings());
         Assert.Single(new FbxExportOptions { Preset = FbxExportPreset.Unity, Baked = true, MinimumScale = 0 }.CompatibilityWarnings());
         Assert.Empty(new FbxExportOptions { Preset = FbxExportPreset.Plain }.CompatibilityWarnings());
+        Assert.Single(new FbxExportOptions { Preset = FbxExportPreset.Universal, FittedCubic = true }.CompatibilityWarnings());
+
+        // Universal takes every engine fix that suits all three readers, with Blender's linear keys.
+        var universal = new FbxExportOptions { Preset = FbxExportPreset.Universal };
+        Assert.True(universal.PlainHierarchy && universal.LinearBakedKeys && universal.FittedKeys && universal.UniqueAnimationNames);
+        Assert.False(universal.FittedCubic);
+        Assert.True(universal.MinimumScale > 0);
+        Assert.Empty(universal.CompatibilityWarnings());
         Assert.Empty(new FbxExportOptions { Preset = FbxExportPreset.Unity, FittedKeys = false, Animations = [] }.CompatibilityWarnings());
     }
 

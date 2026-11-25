@@ -88,6 +88,16 @@ public sealed class SkinEditor
                     $"'{mesh.Name}' belongs to '{owner.Name}', not '{Character.Name}'.");
             bool outsideCharacter = owner == null;
             if (outsideCharacter) MoveKeepWorld(mesh, Character);
+            // A mesh dragged over from another character still carries that rig's weights (Unbind
+            // keeps them): carry them across by joint name when every influence's joint exists here,
+            // otherwise they index the wrong bones and are replaced by this bind's solution.
+            bool foreignWeights = false;
+            if (!mesh.Skinned && mesh.BindPose?.Ancestor<Character>() is { } previous && !ReferenceEquals(previous, Character))
+            {
+                var previousNames = previous.Joints.Select(j => j.Name ?? "").ToList();
+                if (AllInfluencesNamed(mesh, previousNames)) RemapKeptWeights(mesh, previousNames);
+                else foreignWeights = true;
+            }
             if (!mesh.Skinned)
             {
                 pose ??= CreateBindPose();
@@ -104,7 +114,7 @@ public sealed class SkinEditor
                 // The bind also solves the smooth array from the same joint list, with a
                 // threaded pass that is not bit-reproducible; carried weights are kept and only an
                 // unweighted mesh gets the rigid solution as its smooth set.
-                if (!mesh.SkinWeights.Any(w => w.Length > 0)) WriteWeights(mesh, "SkinWeightArray", rigid);
+                if (foreignWeights || !mesh.SkinWeights.Any(w => w.Length > 0)) WriteWeights(mesh, "SkinWeightArray", rigid);
             }
             else if (!rewriteWeights && previousJoints != null &&
                      previousJoints.TryGetValue(mesh, out var oldJoints))
@@ -155,14 +165,100 @@ public sealed class SkinEditor
         foreach (var mesh in scene.Meshes.ToList())
         {
             if (!mesh.Skinned || mesh.SkinnedMeshIsLocked) continue;
-            var world = mesh.WorldMatrix;
-            mesh.Skinned = false;
-            mesh.LocalMatrix = world;
-            mesh.Source.Parent?.RemoveChild(mesh.Source);
-            scene.Source.AddChild(mesh.Source);
+            UnbindOne(mesh, scene);
             count++;
         }
         return count;
+    }
+
+    /// <summary>Detaches one skinned mesh to the scene root as Unbind Skin does.</summary>
+    private static void UnbindOne(Mesh mesh, Scene scene)
+    {
+        var world = mesh.WorldMatrix;
+        mesh.Skinned = false;
+        mesh.LocalMatrix = world;
+        mesh.Source.Parent?.RemoveChild(mesh.Source);
+        scene.Source.AddChild(mesh.Source);
+    }
+
+    /// <summary>
+    /// The hierarchy panel's mesh drag: moves <paramref name="mesh"/> under
+    /// <paramref name="newParent"/>, or to the scene root when it is null, keeping its world
+    /// transform. A skinned mesh that leaves its character is unbound first, exactly as Unbind Skin
+    /// does to it (the bind pose reference and the weights stay, so Bind Skin in the new character
+    /// can carry them across by joint name). With <paramref name="beside"/> the mesh is then put
+    /// just before (or <paramref name="after"/>) that sibling in its new parent's child list.
+    /// </summary>
+    /// <returns>Whether the mesh was unbound.</returns>
+    public static bool MoveMesh(Mesh mesh, Object3D? newParent, Object3D? beside = null, bool after = false)
+    {
+        var scene = mesh.Model.Scene;
+        var from = mesh.Ancestor<Character>();
+        var to = newParent == null ? null : newParent as Character ?? newParent.Ancestor<Character>();
+        if (newParent != null && IsUnder(newParent, mesh))
+            throw new InvalidOperationException($"'{mesh.Name}' cannot be moved under its own descendant.");
+        bool unbound = false;
+        if (!ReferenceEquals(from, to) && mesh.Skinned)
+        {
+            if (mesh.SkinnedMeshIsLocked)
+                throw new InvalidOperationException($"'{mesh.Name}' is locked to its skin: unlock it before moving it out of '{from?.Name}'.");
+            UnbindOne(mesh, scene);
+            unbound = true;
+        }
+        if (newParent != null)
+        {
+            if (!ReferenceEquals(mesh.Source.Parent, newParent.Source)) MoveKeepWorld(mesh, newParent);
+        }
+        else if (!ReferenceEquals(mesh.Source.Parent, scene.Source))
+        {
+            var world = mesh.WorldMatrix;
+            mesh.Source.Parent?.RemoveChild(mesh.Source);
+            scene.Source.AddChild(mesh.Source);
+            mesh.LocalMatrix = world;
+        }
+        if (beside != null && !ReferenceEquals(beside, mesh))
+        {
+            var parent = mesh.Source.Parent!;
+            var children = parent.Children.Where(c => !ReferenceEquals(c, mesh.Source)).ToList();
+            // The sibling may sit in a folder of the scene root rather than in the root itself:
+            // the mesh then stays at the end of the root, which is still beside it in the panel.
+            int at = children.IndexOf(beside.Source);
+            if (at >= 0)
+            {
+                children.Insert(after ? at + 1 : at, mesh.Source);
+                parent.SetChildren(children);
+            }
+        }
+        return unbound;
+    }
+
+    /// <summary>Whether <paramref name="node"/> is <paramref name="ancestor"/> or below it.</summary>
+    private static bool IsUnder(SceneObject node, SceneObject ancestor)
+    {
+        for (SceneObject? o = node; o != null; o = o.Parent)
+            if (ReferenceEquals(o.Source, ancestor.Source)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether every influence in <paramref name="mesh"/>'s weight arrays names a joint of
+    /// <paramref name="previousJoints"/> that this character also has.
+    /// </summary>
+    private bool AllInfluencesNamed(Mesh mesh, IReadOnlyList<string> previousJoints)
+    {
+        var names = new HashSet<string>(Character.Joints.Select(j => j.Name ?? ""), StringComparer.Ordinal);
+        foreach (string field in new[] { "SkinWeightArray", "RigidSkinWeightArray" })
+            foreach (object? array in SceneValues.Items(mesh.Source, field))
+            {
+                if (array is not AktStruct weights) continue;
+                foreach (object? item in SceneValues.Items(weights, "WeightArray"))
+                {
+                    if (item is not AktStruct influence) continue;
+                    int old = (int)influence.Get<uint>("BoneIndex");
+                    if (old < 0 || old >= previousJoints.Count || !names.Contains(previousJoints[old])) return false;
+                }
+            }
+        return true;
     }
 
     /// <summary>
@@ -338,6 +434,6 @@ public sealed class SkinEditor
             }
             arrays.Add(array);
         }
-        mesh.Source.Set(field, arrays);
+        mesh.Source.Set(field, AktArrayColumn.Pack(schema, "CVertexWeightArray", arrays));
     }
 }

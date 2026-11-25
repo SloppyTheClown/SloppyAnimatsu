@@ -609,22 +609,55 @@ public sealed class Preferences
         using (var file = File.Create(path))
             template.CopyTo(file);
         var preferences = Load(path);
-        preferences.ClearPersonal();
-        if (preferences._general is { } general)
-            foreach (string member in HiddenMembers)
-            {
-                if (general.FindField(member) is { } field) general.Fields.Remove(field);
-                preferences.Document.Schema.FindClass(general.TypeName)?.Members.RemoveAll(m => m.Name == member);
-            }
+        preferences.PrepareDefaults();
         foreach (string context in new[] { "Rigging", "Animation" })
         {
             var dock = DockLayout.For(preferences, context);
             FloatingLayout.FromPreset(LayoutPreset.Default, context, PanelCatalogue.For(context),
                 DefaultLayoutWidth, DefaultLayoutHeight, dock).WriteTo(dock);
         }
-        preferences.EnsureMaterialPage();
         preferences.Save();
         return preferences;
+    }
+
+    /// <summary>
+    /// The default values every page starts with, in memory only (no file behind it, never saved):
+    /// what the preferences dialog's *Restore defaults* writes back.
+    /// </summary>
+    public static Preferences Defaults()
+    {
+        byte[] bytes;
+        using (var template = typeof(Preferences).Assembly.GetManifestResourceStream(TemplateResource)
+                              ?? throw new InvalidDataException("The default preferences template is missing from the build."))
+        using (var buffer = new MemoryStream())
+        {
+            template.CopyTo(buffer);
+            bytes = buffer.ToArray();
+        }
+        var document = AktReader.Read(bytes);
+        var main = document.Roots.FirstOrDefault(o => o.ClassKey == "CMainPreferences")
+                   ?? throw new InvalidDataException("The default preferences template has no CMainPreferences.");
+        var general = document.Roots.FirstOrDefault(o => o.ClassKey == "CGeneralPreferences");
+        var preferences = new Preferences(document, "", main, general);
+        preferences.PrepareDefaults();
+        return preferences;
+    }
+
+    /// <summary>The template's values made into this app's defaults (in memory).</summary>
+    private void PrepareDefaults()
+    {
+        ClearPersonal();
+        if (_general is { } general)
+            foreach (string member in HiddenMembers)
+            {
+                if (general.FindField(member) is { } field) general.Fields.Remove(field);
+                Document.Schema.FindClass(general.TypeName)?.Members.RemoveAll(m => m.Name == member);
+            }
+        EnsureMaterialPage();
+        EnsureAnimBankPage();
+        EnsureTransformPage();
+        // The template carries akeytsu's joint axes (aim Y, up Z); SloppyAnimatsu starts at its own.
+        SetJointAlignment(JointAlignment.Default, save: false, out _);
     }
 
     /// <summary>The window size the generated default layout is written for (the capture).</summary>
@@ -931,6 +964,28 @@ public sealed class Preferences
     public bool EnsureMaterialPage() =>
         EnsureOwnPage(MaterialPageClass, MaterialPageMembers, page => page.Set(MaterialPreviewSize, DefaultMaterialPreviewSize));
 
+    // ---- SloppyAnimatsu's own TRANSFORM window page, shown on the Transform preferences row.
+
+    public const string TransformPageClass = "CMyAkTransformPreferences";
+    /// <summary>The unit the TRANSFORM window shows translation in: <see cref="Model.TranslationUnit"/> as an int.</summary>
+    public const string TranslationUnitMember = "TranslationUnit";
+
+    /// <summary>Adds the TRANSFORM page when the file lacks it (scene units). Returns whether the document changed.</summary>
+    public bool EnsureTransformPage() =>
+        EnsureOwnPage(TransformPageClass, [(TranslationUnitMember, "int")], null);
+
+    /// <summary>The TRANSFORM window's translation unit; scene units unless metres were chosen.</summary>
+    public TranslationUnit TranslationUnit
+    {
+        get => Page(TransformPageClass)?.Get(TranslationUnitMember) is int n && Enum.IsDefined(typeof(TranslationUnit), n)
+            ? (TranslationUnit)n : TranslationUnit.SceneUnits;
+        set
+        {
+            EnsureTransformPage();
+            Page(TransformPageClass)?.Set(TranslationUnitMember, (int)value);
+        }
+    }
+
     // ---- SloppyAnimatsu's own Anim Bank page: how the bank panel sorts (AnimBankView).
 
     public const string AnimBankPageClass = "CMyAkAnimBankPreferences";
@@ -971,6 +1026,7 @@ public sealed class Preferences
     public const string ExportPageClass = "CExportPreferences";
     public const string ExportFlagsMember = "ExportFlags";
     public const string ExportSeparatorMember = "ExportFolderSeparator";
+    public const string ExportScaleMember = "ExportScaleFactor";
 
     /// <summary>The Export Settings window's last choices; the default target's base settings when unset.</summary>
     public Fbx.FbxExportSettings ExportSettings
@@ -980,13 +1036,16 @@ public sealed class Preferences
         {
             FolderSeparator = Page(ExportPageClass)?.Get(ExportSeparatorMember) is string separator
                 ? separator : Fbx.FbxExportSettings.DefaultFolderSeparator,
+            ScaleFactor = Page(ExportPageClass)?.Get(ExportScaleMember) is float scale && Fbx.FbxExportSettings.IsValidScaleFactor(scale)
+                ? scale : 1f,
         };
         set
         {
-            EnsureOwnPage(ExportPageClass, [(ExportFlagsMember, "uint"), (ExportSeparatorMember, "QString")],
+            EnsureOwnPage(ExportPageClass, [(ExportFlagsMember, "uint"), (ExportSeparatorMember, "QString"), (ExportScaleMember, "float")],
                 page => page.Set(ExportSeparatorMember, Fbx.FbxExportSettings.DefaultFolderSeparator));
             Page(ExportPageClass)?.Set(ExportFlagsMember, value.ToFlags());
             Page(ExportPageClass)?.Set(ExportSeparatorMember, value.FolderSeparator ?? "");
+            Page(ExportPageClass)?.Set(ExportScaleMember, Fbx.FbxExportSettings.IsValidScaleFactor(value.ScaleFactor) ? value.ScaleFactor : 1f);
         }
     }
 
@@ -1035,6 +1094,71 @@ public sealed class Preferences
     public int MaterialPreviewPixels =>
         Page(MaterialPageClass)?.Get(MaterialPreviewSize) is int n && n >= 48 && n <= 512 ? n : DefaultMaterialPreviewSize;
 
+    /// <summary>
+    /// The Stacker's ghost settings (<c>CStackerPreferences</c>) and colours (<c>CColorsPreferences</c>),
+    /// with the shipped defaults for anything missing: ghosts shown while playing (Flags bit 0), no
+    /// wireframe over them (Flags bit 1), 10 each side, on keys, previous grey 0x686868, next red 0xF23629.
+    /// </summary>
+    public GhostSettings Ghosts
+    {
+        get
+        {
+            var stacker = Page("CStackerPreferences");
+            uint flags = stacker?.Get("Flags") is { } f && IsInteger(f) ? Convert.ToUInt32(f) : 1u;
+            int previous = stacker?.Get("NbPreviousGhosts") is { } p && IsInteger(p) ? Convert.ToInt32(p) : 10;
+            int next = stacker?.Get("NbNextGhosts") is { } n && IsInteger(n) ? Convert.ToInt32(n) : 10;
+            bool perFrame = stacker?.Get("GhostsType") is { } t && IsInteger(t) && Convert.ToInt32(t) == 1;
+            var colors = Page("CColorsPreferences");
+            byte[] previousColor = colors?.Get("PreviousGhostsColor") is byte[] { Length: 4 } pc ? pc : [0x68, 0x68, 0x68, 0xFF];
+            byte[] nextColor = colors?.Get("NextGhostsColor") is byte[] { Length: 4 } nc ? nc : [0xF2, 0x36, 0x29, 0xFF];
+            return new GhostSettings((flags & 1) != 0, Math.Max(0, previous), Math.Max(0, next), perFrame,
+                (previousColor[0], previousColor[1], previousColor[2]), (nextColor[0], nextColor[1], nextColor[2]),
+                Wire: (flags & 2) != 0);
+        }
+    }
+
+    private static bool IsInteger(object value) =>
+        value is byte or sbyte or short or ushort or int or uint or long or ulong;
+
+    /// <summary>
+    /// <c>CDisplayPreferences.ShowHideOnAllViews</c> ("Decorator display affects all views"): when on,
+    /// the View &amp; Preferences shading and skeleton switches apply to every view; when off (the
+    /// shipped value) each view of a multi-view layout keeps its own.
+    /// </summary>
+    public bool DecoratorsAffectAllViews => Page("CDisplayPreferences")?.Get("ShowHideOnAllViews") switch
+    {
+        bool value => value,
+        byte raw => raw != 0,
+        _ => false,
+    };
+
+    /// <summary>
+    /// <c>CDisplayPreferences.SkinningZoneAlpha</c> ("Skin decorator alpha"): how strongly the skin
+    /// weight tint covers the mesh colour, 0-1. 0.5 when missing or unreadable.
+    /// </summary>
+    public float SkinDecoratorAlpha => DisplayAlpha("SkinningZoneAlpha");
+
+    /// <summary>
+    /// <c>CDisplayPreferences.BlendshapeInteractiveZoneAlpha</c> ("Blendshape picking decorator
+    /// alpha"): the opacity of a blendshape's picking zone outline, 0-1. 0.5 when missing.
+    /// </summary>
+    public float BlendshapeZoneAlpha => DisplayAlpha("BlendshapeInteractiveZoneAlpha");
+
+    /// <summary>
+    /// <c>CDisplayPreferences.JointDisplayMode</c>: Light (0, the shipped value) shrinks the joints of
+    /// crowded areas by the high-density factor; Classic (1) draws every joint at the standard size.
+    /// </summary>
+    public JointDisplayMode JointDisplayMode =>
+        Page("CDisplayPreferences")?.Get("JointDisplayMode") switch
+        {
+            int mode => mode == 1 ? JointDisplayMode.Classic : JointDisplayMode.Light,
+            uint mode => mode == 1 ? JointDisplayMode.Classic : JointDisplayMode.Light,
+            _ => JointDisplayMode.Light,
+        };
+
+    private float DisplayAlpha(string member) =>
+        Page("CDisplayPreferences")?.Get(member) is float value && float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : 0.5f;
+
     private T _generalSpinner<T>(string member, T fallback) =>
         Page("CSpinnerPreferences")?.Get(member) is T value ? value : fallback;
 
@@ -1051,4 +1175,36 @@ public sealed class Preferences
         Document.Save(path, SettingsFiles.FormatFor(path));
         Path = path;
     }
+}
+
+/// <summary>How joints are drawn (Decorators page, "Joint display mode").</summary>
+public enum JointDisplayMode
+{
+    /// <summary>Joints in crowded areas (fingers, face) shrink by the high-density size factor.</summary>
+    Light = 0,
+    /// <summary>Every joint is drawn at the standard size factor.</summary>
+    Classic = 1,
+}
+
+/// <summary>The unit the TRANSFORM window shows (and takes typed) translation values in.</summary>
+public enum TranslationUnit
+{
+    /// <summary>The scene's own units, unchanged (centimetres in practice).</summary>
+    SceneUnits = 0,
+    /// <summary>Metres: scene units / 100.</summary>
+    Meters = 1,
+}
+
+public static class TranslationUnits
+{
+    /// <summary>Scene units per metre: one scene unit is a centimetre.</summary>
+    public const float SceneUnitsPerMeter = 100f;
+
+    /// <summary>Displayed units per scene unit for <paramref name="unit"/>.</summary>
+    public static float DisplayScale(this TranslationUnit unit) =>
+        unit == TranslationUnit.Meters ? 1f / SceneUnitsPerMeter : 1f;
+
+    /// <summary>The short unit name the TRANSFORM window labels translation with.</summary>
+    public static string Suffix(this TranslationUnit unit) =>
+        unit == TranslationUnit.Meters ? "m" : "scene units, cm";
 }

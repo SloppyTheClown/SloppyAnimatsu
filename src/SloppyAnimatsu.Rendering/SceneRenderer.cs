@@ -47,6 +47,8 @@ public sealed class SceneRenderer : IDisposable
         uniform bool u_textured;
         uniform bool u_transparent;
         uniform bool u_lit;
+        uniform bool u_ghost;
+        uniform vec4 u_ghostColor;
         out vec4 o_color;
         void main()
         {
@@ -63,7 +65,19 @@ public sealed class SceneRenderer : IDisposable
                 albedo = texel.rgb;
             }
             float d = abs(dot(normalize(v_normal), normalize(v_toEye)));
-            o_color = vec4(u_lit ? albedo * (0.25 + 0.75 * d) : albedo, alpha);
+            vec3 shaded = u_lit ? albedo * (0.25 + 0.75 * d) : albedo;
+            if (u_ghost)
+            {
+                // A ghost keeps its texture and shading, recoloured: the shaded brightness carries
+                // the ghost colour's hue (a luminance-preserving colorize), pulled a quarter of the
+                // way to the flat ghost colour so a dark or light ghost colour still reads.
+                const vec3 luma = vec3(0.299, 0.587, 0.114);
+                float tintLuma = max(dot(u_ghostColor.rgb, luma), 0.05);
+                vec3 colorized = clamp(u_ghostColor.rgb * (dot(shaded, luma) / tintLuma), 0.0, 1.0);
+                o_color = vec4(mix(colorized, u_ghostColor.rgb, 0.25), alpha * u_ghostColor.a);
+                return;
+            }
+            o_color = vec4(shaded, alpha);
         }
         """;
 
@@ -259,6 +273,14 @@ public sealed class SceneRenderer : IDisposable
     /// <summary>What to draw; call <see cref="ScenePose.Update"/> on it to change the pose.</summary>
     public ScenePose? Pose { get; set; }
 
+    /// <summary>
+    /// Onion-skin ghosts drawn over the scene: the character's mesh at other times, one flat
+    /// colour each and see-through. The list is drawn in order, so put the farthest first. The
+    /// renderer keeps one GPU buffer per vertex array (by reference), so pass the same array again
+    /// for an unchanged ghost.
+    /// </summary>
+    public IReadOnlyList<GhostMesh> Ghosts { get; set; } = [];
+
     public bool ShowMesh { get; set; } = true;
     public bool ShowSkeleton { get; set; } = true;
     public bool ShowControllers { get; set; } = true;
@@ -334,6 +356,12 @@ public sealed class SceneRenderer : IDisposable
     /// (position and colour, <see cref="ScenePose.LineVertexFloats"/> floats each); empty for none
     /// </summary>
     public float[] ZoneTriangles { get; set; } = [];
+
+    /// <summary>
+    /// The opacity of the blendshape decorators (<see cref="DecoratorLines"/> and
+    /// <see cref="ZoneTriangles"/>): Decorators "Blendshape interactive zone alpha".
+    /// </summary>
+    public float ZoneAlpha { get; set; } = 1f;
 
     /// <summary>
     /// The selected skinned-mesh control points, as world-space
@@ -465,8 +493,13 @@ public sealed class SceneRenderer : IDisposable
         }
         else
         {
+            var shared = CurrentDisplay;
             for (int i = 0; i < Views.Count; i++)
+            {
+                ApplyDisplay(Views[i].Display ?? shared);
                 DrawView(Views[i].Camera ?? Camera, Views[i].Rect, width, height, pose);
+            }
+            ApplyDisplay(shared);
             if (Views.Count > 1)
             {
                 foreach (var view in Views) DrawBorder(view.Rect, ViewBorder, width, height, 1);
@@ -475,6 +508,19 @@ public sealed class SceneRenderer : IDisposable
         }
         gl.BindVertexArray(0);
         gl.UseProgram(0);
+    }
+
+    /// <summary>The shared display switches as a <see cref="ViewDisplay"/>.</summary>
+    public ViewDisplay CurrentDisplay => new(Wireframe, Textured, Lit, ShowJoints, ShowBones, ShowPivots);
+
+    private void ApplyDisplay(ViewDisplay display)
+    {
+        Wireframe = display.Wireframe;
+        Textured = display.Textured;
+        Lit = display.Lit;
+        ShowJoints = display.ShowJoints;
+        ShowBones = display.ShowBones;
+        ShowPivots = display.ShowPivots;
     }
 
     /// <summary>Draws one view in its rectangle: clears it (letterboxing a photo view) and renders the pose.</summary>
@@ -608,6 +654,7 @@ public sealed class SceneRenderer : IDisposable
         // usual.
         bool controllers = ShowControllers && !HideHandles;
         if (pose != null && controllers) DrawLines(PrimitiveType.Triangles, pose.ControllerTriangles, 1);
+        if (pose != null && ShowMesh && Ghosts.Count > 0) DrawGhosts(pose, viewProjection, view.Eye);
         gl.Disable(EnableCap.DepthTest);
         // Animated cameras: a wireframe camera with an arrow to its target (SloppyAnimatsu's own shape,
         // in place of the target disc); blue while the target is locked.
@@ -616,14 +663,29 @@ public sealed class SceneRenderer : IDisposable
             var cameraLines = CameraShapes.Lines(pose.Cameras, view.Eye, Selected, AlsoSelected);
             if (cameraLines.Length > 0) DrawWideLines(cameraLines, 2, viewProjection, aw, ah);
         }
-        if (DecoratorLines.Length > 0) DrawLines(PrimitiveType.Lines, DecoratorLines, 1);
-        if (ZoneTriangles.Length > 0) DrawLines(PrimitiveType.Lines, ZoneTriangles, 1);
+        if (DecoratorLines.Length > 0) DrawLines(PrimitiveType.Lines, DecoratorLines, 1, alpha: Math.Clamp(ZoneAlpha, 0f, 1f));
+        if (ZoneTriangles.Length > 0) DrawLines(PrimitiveType.Lines, ZoneTriangles, 1, alpha: Math.Clamp(ZoneAlpha, 0f, 1f));
         if (pose != null && ShowSkeleton)
         {
-            if (ShowBones) DrawWideLines(pose.SkeletonLines, 0, viewProjection, aw, ah, worldWidth: sizes.BoneWidth);
-            if (ShowJoints && !HideHandles) DrawLines(PrimitiveType.Points, pose.SkeletonPoints, 0, round: true, worldSize: sizes.Joint);
+            // Each batch shares one size: dense areas (fingers, a face) are drawn smaller.
+            if (ShowBones)
+                foreach (var batch in pose.BoneBatches)
+                    DrawWideLines(batch.Vertices, 0, viewProjection, aw, ah, worldWidth: sizes.BoneWidth * batch.Scale);
+            if (ShowJoints && !HideHandles)
+                foreach (var batch in pose.JointBatches)
+                    DrawLines(PrimitiveType.Points, batch.Vertices, 0, round: true, worldSize: sizes.Joint * batch.Scale);
         }
-        if (pose != null && ShowPivots && pose.PivotLines.Length > 0) DrawWideLines(pose.PivotLines, 2, viewProjection, aw, ah);
+        if (pose != null && ShowPivots && pose.PivotLines.Length > 0)
+        {
+            DrawWideLines(pose.PivotLines, 2, viewProjection, aw, ah);
+            // The selection's pivots at the selected size factor, over the small unselected ones.
+            var selectedPivots = new List<float>();
+            float pivotFactor = pose.Model.Scene.PivotRenderSize;
+            foreach (var o in AlsoSelected.Append(Selected))
+                if (o != null && pose.Character != null && !CameraShapes.IsGlyphPart(o) && pose.Evaluator(pose.Character).IndexOf(o) >= 0)
+                    pose.WritePivot(selectedPivots, o, 0.5f * sizes.Joint * pose.DotScaleOf(o) * pivotFactor);
+            if (selectedPivots.Count > 0) DrawWideLines(selectedPivots.ToArray(), 2, viewProjection, aw, ah);
+        }
         // Shoe locators: yellow plus signs, 3 px wide as the app draws them (controller-display.md
         // "Shoe locators").
         if (pose != null && controllers && pose.ShoeMarkers.Length > 0)
@@ -649,16 +711,15 @@ public sealed class SceneRenderer : IDisposable
         if (pose != null && pose.Character != null && !HideHandles && AlsoSelected.Count > 0)
         {
             var evaluator = pose.Evaluator(pose.Character);
-            var points = new List<float>();
             foreach (var o in AlsoSelected)
                 if (o is not ControllerIK && !CameraShapes.IsGlyphPart(o) && evaluator.IndexOf(o) >= 0 && pose.WorldOf(o).Translation is var q)
-                    points.AddRange([q.X, q.Y, q.Z, 0.7f, 0.7f, 0.7f]);
-            if (points.Count > 0) DrawLines(PrimitiveType.Points, points.ToArray(), 0, round: true, worldSize: sizes.AlsoSelected);
+                    DrawLines(PrimitiveType.Points, [q.X, q.Y, q.Z, 0.7f, 0.7f, 0.7f], 0, round: true,
+                        worldSize: sizes.AlsoSelected * pose.DotScaleOf(o));
         }
         if (pose != null && !HideHandles && Selected != null && Selected is not ControllerIK && !CameraShapes.IsGlyphPart(Selected) && pose.Character != null && pose.Evaluator(pose.Character).IndexOf(Selected) >= 0)
         {
             var p = pose.WorldOf(Selected).Translation;
-            DrawLines(PrimitiveType.Points, [p.X, p.Y, p.Z, 1, 1, 1], 0, round: true, worldSize: sizes.Selected);
+            DrawLines(PrimitiveType.Points, [p.X, p.Y, p.Z, 1, 1, 1], 0, round: true, worldSize: sizes.Selected * pose.DotScaleOf(Selected));
         }
         if (Markers.Count > 0)
         {
@@ -681,14 +742,21 @@ public sealed class SceneRenderer : IDisposable
     private float[] WireLines(ScenePose pose)
     {
         if (ReferenceEquals(pose, _wirePose) && pose.Version == _wireVersion) return _wireLines;
+        _wireLines = WireLinesOf(pose.MeshVertices, pose.VisibleRanges, WireframeColor);
+        _wirePose = pose;
+        _wireVersion = pose.Version;
+        return _wireLines;
+    }
+
+    /// <summary>The edges of the triangles of <paramref name="ranges"/> in <paramref name="source"/> as a coloured line list.</summary>
+    private static float[] WireLinesOf(float[] source, IReadOnlyList<MeshRange> ranges, Vector3 c)
+    {
         const int F = ScenePose.MeshVertexFloats;
-        var source = pose.MeshVertices;
         int count = 0;
-        foreach (var range in pose.VisibleRanges) count += range.Count;
+        foreach (var range in ranges) count += range.Count;
         var lines = new float[count * 2 * ScenePose.LineVertexFloats];
-        var c = WireframeColor;
         int o = 0;
-        foreach (var range in pose.VisibleRanges)
+        foreach (var range in ranges)
         {
             for (int v = range.First; v + 2 < range.First + range.Count; v += 3)
             {
@@ -703,9 +771,6 @@ public sealed class SceneRenderer : IDisposable
             }
         }
         if (o != lines.Length) Array.Resize(ref lines, o);
-        _wireLines = lines;
-        _wirePose = pose;
-        _wireVersion = pose.Version;
         return lines;
     }
 
@@ -749,9 +814,149 @@ public sealed class SceneRenderer : IDisposable
         return flipped;
     }
 
+    /// <summary>GPU buffers of one ghost: its triangles and, once asked for, its wire lines.</summary>
+    private sealed class GhostBuffers
+    {
+        public uint MeshVao, MeshVbo, WireVao, WireVbo;
+        public int WireCount = -1;
+    }
+
+    /// <summary>GPU buffers of the ghosts drawn last, by vertex array, so a ghost that did not change is not uploaded again.</summary>
+    private readonly Dictionary<float[], GhostBuffers> _ghostBuffers = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Draws <see cref="Ghosts"/> see-through over the scene, textured and lit like the mesh and
+    /// recoloured in the ghost colour. Each ghost first writes its depth alone, then its colour
+    /// where it is the front surface, so a ghost shows only its own outer shell (not its insides
+    /// through itself) while the real mesh and the ghosts before it still hide what is behind
+    /// them. A ghost marked <see cref="GhostMesh.Wire"/> gets its edges drawn over it.
+    /// </summary>
+    private void DrawGhosts(ScenePose pose, Matrix4x4 viewProjection, Vector3 eye)
+    {
+        var gl = _gl!;
+        // Drop the buffers of ghosts no longer shown, upload the new ones.
+        var live = new HashSet<float[]>(ReferenceEqualityComparer.Instance);
+        foreach (var ghost in Ghosts) live.Add(ghost.Geometry.Vertices);
+        foreach (var stale in _ghostBuffers.Keys.Where(k => !live.Contains(k)).ToList())
+        {
+            DeleteGhost(_ghostBuffers[stale]);
+            _ghostBuffers.Remove(stale);
+        }
+
+        gl.UseProgram(_meshProgram);
+        SetMatrix(_meshProgram, "u_viewProjection", viewProjection);
+        gl.Uniform3(gl.GetUniformLocation(_meshProgram, "u_eye"), eye.X, eye.Y, eye.Z);
+        gl.Uniform1(gl.GetUniformLocation(_meshProgram, "u_texture"), 0);
+        gl.Uniform1(gl.GetUniformLocation(_meshProgram, "u_lit"), Lit ? 1 : 0);
+        int ghostLocation = gl.GetUniformLocation(_meshProgram, "u_ghost");
+        int colorLocation = gl.GetUniformLocation(_meshProgram, "u_ghostColor");
+        int texturedLocation = gl.GetUniformLocation(_meshProgram, "u_textured");
+        int transparentLocation = gl.GetUniformLocation(_meshProgram, "u_transparent");
+        gl.Uniform1(ghostLocation, 1);
+        gl.ActiveTexture(TextureUnit.Texture0);
+        gl.Enable(EnableCap.Blend);
+        gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        gl.DepthFunc(DepthFunction.Lequal);
+        foreach (var ghost in Ghosts)
+        {
+            var geometry = ghost.Geometry;
+            if (geometry.Vertices.Length < ScenePose.MeshVertexFloats * 3) continue;
+            if (!_ghostBuffers.TryGetValue(geometry.Vertices, out var buffers))
+            {
+                buffers = new GhostBuffers();
+                (buffers.MeshVao, buffers.MeshVbo) = VertexArray([3, 3, 3, 2]);
+                Upload(buffers.MeshVbo, geometry.Vertices);
+                _ghostBuffers[geometry.Vertices] = buffers;
+            }
+            if (ghost.Wire)
+            {
+                // Pushes the faces back so the edges drawn on them win the depth test.
+                gl.Enable(EnableCap.PolygonOffsetFill);
+                gl.PolygonOffset(1f, 1f);
+            }
+            gl.BindVertexArray(buffers.MeshVao);
+            gl.ColorMask(false, false, false, false);
+            DrawRanges();
+            gl.ColorMask(true, true, true, true);
+            gl.Uniform4(colorLocation, ghost.Color.X, ghost.Color.Y, ghost.Color.Z, ghost.Alpha);
+            gl.DepthFunc(DepthFunction.Equal);
+            DrawRanges();
+            gl.DepthFunc(DepthFunction.Lequal);
+            gl.Disable(EnableCap.PolygonOffsetFill);
+            if (ghost.Wire)
+            {
+                if (buffers.WireCount < 0)
+                {
+                    var lines = WireLinesOf(geometry.Vertices, geometry.Ranges, WireframeColor);
+                    (buffers.WireVao, buffers.WireVbo) = VertexArray([3, 3]);
+                    Upload(buffers.WireVbo, lines);
+                    buffers.WireCount = lines.Length / ScenePose.LineVertexFloats;
+                }
+                if (buffers.WireCount > 0)
+                {
+                    gl.UseProgram(_lineProgram);
+                    gl.BindVertexArray(buffers.WireVao);
+                    gl.Uniform1(gl.GetUniformLocation(_lineProgram, "u_pointSize"), 1f);
+                    gl.Uniform1(gl.GetUniformLocation(_lineProgram, "u_worldSize"), 0f);
+                    gl.Uniform1(gl.GetUniformLocation(_lineProgram, "u_alpha"), ghost.Alpha);
+                    gl.Uniform1(gl.GetUniformLocation(_lineProgram, "u_round"), 0);
+                    gl.DrawArrays(PrimitiveType.Lines, 0, (uint)buffers.WireCount);
+                    gl.UseProgram(_meshProgram);
+                }
+            }
+
+            void DrawRanges()
+            {
+                foreach (var range in geometry.Ranges)
+                {
+                    uint id = Textured ? TextureOf(pose, range.Texture) : 0;
+                    gl.BindTexture(TextureTarget.Texture2D, id);
+                    if (id != 0)
+                    {
+                        int min = range.Nearest ? (int)TextureMinFilter.NearestMipmapNearest : (int)TextureMinFilter.LinearMipmapLinear;
+                        int mag = range.Nearest ? (int)TextureMagFilter.Nearest : (int)TextureMagFilter.Linear;
+                        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, min);
+                        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, mag);
+                    }
+                    gl.Uniform1(texturedLocation, id != 0 ? 1 : 0);
+                    // Cut-out texels are dropped from the ghost too, so its shell follows them.
+                    gl.Uniform1(transparentLocation, id != 0 && range.Transparent ? 1 : 0);
+                    gl.DrawArrays(PrimitiveType.Triangles, range.First, (uint)range.Count);
+                }
+            }
+        }
+        gl.Disable(EnableCap.Blend);
+        gl.Uniform1(ghostLocation, 0);
+        gl.Uniform1(transparentLocation, 0);
+        gl.BindTexture(TextureTarget.Texture2D, 0);
+        gl.BindVertexArray(_lineVao);
+        gl.UseProgram(_lineProgram);
+        gl.Uniform1(gl.GetUniformLocation(_lineProgram, "u_alpha"), 1f);
+    }
+
+    private void DeleteGhost(GhostBuffers buffers)
+    {
+        var gl = _gl!;
+        gl.DeleteBuffer(buffers.MeshVbo);
+        gl.DeleteVertexArray(buffers.MeshVao);
+        if (buffers.WireCount >= 0)
+        {
+            gl.DeleteBuffer(buffers.WireVbo);
+            gl.DeleteVertexArray(buffers.WireVao);
+        }
+    }
+
+    private void DeleteGhostBuffers()
+    {
+        if (_gl is null) return;
+        foreach (var buffers in _ghostBuffers.Values) DeleteGhost(buffers);
+        _ghostBuffers.Clear();
+    }
+
     public void Dispose()
     {
         if (_gl is not { } gl) return;
+        DeleteGhostBuffers();
         gl.DeleteBuffer(_meshVbo);
         gl.DeleteBuffer(_lineVbo);
         gl.DeleteBuffer(_wideVbo);
@@ -999,10 +1204,24 @@ public sealed class SceneRenderer : IDisposable
 }
 
 /// <summary>One view of a multi-view layout: its camera (null = the orbit camera) and its rectangle.</summary>
-public sealed record RenderViewport(IViewCamera? Camera, ViewRect Rect);
+public sealed record RenderViewport(IViewCamera? Camera, ViewRect Rect, ViewDisplay? Display = null);
+
+/// <summary>
+/// One view's own display switches, used when the Decorators "Show/hide affects all views" option
+/// is off: each view keeps its shading and skeleton decorators. Null on a view draws the
+/// renderer's shared switches.
+/// </summary>
+public sealed record ViewDisplay(bool Wireframe, bool Textured, bool Lit, bool ShowJoints, bool ShowBones, bool ShowPivots);
 
 /// <summary>A transient point over the scene, drawn as a coloured dot (a hot point).</summary>
 public sealed record SceneMarker(Vector3 Position, Vector3 Colour);
+
+/// <summary>
+/// One onion-skin ghost: posed triangles and material ranges (from <see cref="ScenePose.GhostVertices"/>),
+/// drawn textured and lit, recoloured in <see cref="Color"/> (0..1 RGB) at <see cref="Alpha"/>, with its
+/// edges over it when <see cref="Wire"/>.
+/// </summary>
+public sealed record GhostMesh(GhostGeometry Geometry, Vector3 Color, float Alpha, bool Wire = false);
 
 /// <summary>A decoded image: <see cref="Width"/> x <see cref="Height"/> RGBA bytes, not premultiplied, top row first.</summary>
 public sealed record DecodedImage(int Width, int Height, byte[] Rgba);

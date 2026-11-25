@@ -3,7 +3,12 @@ using SloppyAnimatsu.Core.Model;
 
 namespace SloppyAnimatsu.Rendering;
 
-/// <summary>A run of <see cref="ScenePose.MeshVertices"/> drawn with one diffuse texture, or none.</summary>
+/// <summary>A ghost's posed triangles (see <see cref="ScenePose.GhostVertices"/>) and its material ranges.</summary>
+public sealed record GhostGeometry(float[] Vertices, IReadOnlyList<MeshRange> Ranges)
+{
+    public static readonly GhostGeometry Empty = new([], []);
+}
+
 /// <summary>
 /// A run of triangles drawn with one material slot. <see cref="Texture"/> is the texture shown at the
 /// posed time.
@@ -31,6 +36,12 @@ public readonly record struct MeshPartRange(
 /// An animated camera's looker target as the app draws it: a view-facing disc of
 /// radius <see cref="Radius"/> at <see cref="Position"/>
 /// </summary>
+/// <summary>
+/// Skeleton decorators that share one size: <see cref="Vertices"/> (<see cref="ScenePose.LineVertexFloats"/>
+/// floats per vertex) drawn at <see cref="Scale"/> times the standard joint dot or bone width.
+/// </summary>
+public sealed record DecoratorBatch(float Scale, float[] Vertices);
+
 public readonly record struct LookerMarker(Object3D Target, Vector3 Position, float Radius);
 
 /// <summary>
@@ -99,6 +110,10 @@ public sealed class ScenePose
                 if (ReferenceEquals(part.Skin.Character, character) || IsUnder(part.Mesh, character))
                     part.Skin.ReloadPlacement();
         }
+        // A mesh, or a group above it, placed on its own (Rigging context) moves the mesh world too.
+        foreach (var part in _parts)
+            if (part.Mesh.WorldMatrix != part.Skin.MeshWorld)
+                part.Skin.ReloadPlacement();
 
         static bool IsUnder(Object3D o, Character character)
         {
@@ -151,6 +166,66 @@ public sealed class ScenePose
     /// <see cref="Update"/>.
     /// </summary>
     public Object3D? SkinDisplayJoint { get; set; }
+
+    /// <summary>
+    /// How strongly the skin-weight colours replace the material colour (Decorators "Skinning
+    /// decorator alpha"): 0 keeps the material, 1 shows the weights alone. Set before <see cref="Update"/>.
+    /// </summary>
+    public float SkinTintAlpha { get; set; } = 1f;
+
+    /// <summary>
+    /// Light joint display: a joint whose nearest shown neighbour is close (fingers, a face) gets a
+    /// smaller dot, sized by the scene's high density factor, so dense areas do not clump into one
+    /// blob. False (Classic) draws every joint at the standard size. Set before <see cref="Update"/>.
+    /// </summary>
+    public bool AdaptiveJointSizes { get; set; } = true;
+
+    /// <summary>
+    /// The joint dots of the last <see cref="Update"/> grouped by size: each batch's
+    /// <see cref="DecoratorBatch.Scale"/> multiplies the standard dot (<see cref="DecoratorSizes.Joint"/>).
+    /// Together they hold the same points as <see cref="SkeletonPoints"/>.
+    /// </summary>
+    public IReadOnlyList<DecoratorBatch> JointBatches { get; private set; } = [];
+
+    /// <summary>The bones of the last <see cref="Update"/> grouped by width scale, as <see cref="JointBatches"/>.</summary>
+    public IReadOnlyList<DecoratorBatch> BoneBatches { get; private set; } = [];
+
+    /// <summary>The dot scale <paramref name="o"/> was drawn with in the last <see cref="Update"/> (1 when it has no dot).</summary>
+    public float DotScaleOf(Object3D? o) => o != null && _dotScales.TryGetValue(o, out var s) ? s : 1f;
+
+    private readonly Dictionary<Object3D, float> _dotScales = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// The size a joint dot keeps per unit of distance to its nearest neighbour and of the high
+    /// density factor: at the default factor 6 a dense joint's dot is 60% of the gap, so the dots
+    /// of neighbouring joints never touch.
+    /// </summary>
+    public const float HighDensityDotPerGap = 0.1f;
+
+    /// <summary>
+    /// Joints closer than this fraction of the standard dot are treated as one place (a twist
+    /// joint on its parent, an end joint on its tip) and do not shrink each other.
+    /// </summary>
+    public const float CoincidentFraction = 0.05f;
+
+    /// <summary>The smallest dot scale; the shader's 2 px minimum keeps even these visible.</summary>
+    public const float MinDotScale = 1f / 32f;
+
+    /// <summary>
+    /// The pivot triad of <paramref name="o"/> as posed, each axis <paramref name="halfLength"/> long,
+    /// appended to <paramref name="into"/> as a line list of <see cref="LineVertexFloats"/> floats per vertex.
+    /// </summary>
+    public void WritePivot(List<float> into, Object3D o, float halfLength) =>
+        AddPivot(into, WorldOf(o), halfLength);
+
+    private static void AddPivot(List<float> into, Matrix4x4 world, float half)
+    {
+        var position = world.Translation;
+        var frame = ControllerShapes.Unscaled(world);
+        Add(into, position, PivotX); Add(into, position + Vector3.TransformNormal(Vector3.UnitX, frame) * half, PivotX);
+        Add(into, position, PivotY); Add(into, position + Vector3.TransformNormal(Vector3.UnitY, frame) * half, PivotY);
+        Add(into, position, PivotZ); Add(into, position + Vector3.TransformNormal(Vector3.UnitZ, frame) * half, PivotZ);
+    }
 
     /// <summary>
     /// A small red/green/blue axis triad at each shown controller of the chosen character (View
@@ -244,6 +319,44 @@ public sealed class ScenePose
                 return part.TryTriangle(triangle, MeshVertices, out a, out b, out c);
         a = b = c = Vector3.Zero;
         return false;
+    }
+
+    /// <summary>
+    /// The meshes <paramref name="character"/> moves, posed by <paramref name="animation"/> at
+    /// <paramref name="time"/> (frames), as one packed triangle list (<see cref="MeshVertexFloats"/>
+    /// floats per vertex, world space) for a ghost, with one range per material slot (offsets into
+    /// that list, carrying the texture the slot shows at that time). Only the meshes shown in the
+    /// scene are written. Leaves the pose's own buffers (<see cref="MeshVertices"/>,
+    /// <see cref="ControllerWorlds"/>) alone.
+    /// </summary>
+    public GhostGeometry GhostVertices(Character character, Animation? animation, float time)
+    {
+        if (!character.IsShownInScene) return GhostGeometry.Empty;
+        int count = 0;
+        foreach (var part in _parts)
+            if (part.Owner == character && part.Mesh.IsShownInScene) count += part.VertexCount;
+        if (count == 0) return GhostGeometry.Empty;
+        var vertices = new float[count * MeshVertexFloats];
+        var ranges = new List<MeshRange>();
+        var evaluator = Evaluator(character);
+        float atTime = animation != null ? time : 0;
+        var worlds = evaluator.DisplayWorldMatrices(animation, atTime);
+        var min = new Vector3(float.MaxValue);
+        var max = new Vector3(float.MinValue);
+        int at = 0;
+        foreach (var part in _parts)
+        {
+            if (part.Owner != character || !part.Mesh.IsShownInScene) continue;
+            Matrix4x4? rigidWorld = part.Anchor != null ? part.RigidWorld(worlds, evaluator, animation, time) : null;
+            part.Write(vertices, worlds, rigidWorld, ref min, ref max, at: at);
+            foreach (var range in part.Ranges)
+            {
+                var rebased = range with { First = range.First - part.First + at };
+                ranges.Add(range.Material is { } m ? rebased with { Texture = m.TextureAt(animation, atTime) } : rebased);
+            }
+            at += part.VertexCount;
+        }
+        return new GhostGeometry(vertices, ranges);
     }
 
     /// <summary>Incremented by every <see cref="Update"/>, so a renderer knows when to upload.</summary>
@@ -356,7 +469,7 @@ public sealed class ScenePose
                 for (int j = 0; j < ownerJoints.Count; j++)
                     if (ReferenceEquals(ownerJoints[j], SkinDisplayJoint)) { tint = part.JointWeights(j); break; }
             }
-            part.Write(MeshVertices, ownerWorlds, rigidWorld, ref min, ref max, tint);
+            part.Write(MeshVertices, ownerWorlds, rigidWorld, ref min, ref max, tint, Math.Clamp(SkinTintAlpha, 0f, 1f));
             // The texture each slot shows now: a texture-swap key of the playing animation, else
             // the material's rest texture.
             var keyed = ownerAnimation;
@@ -372,6 +485,11 @@ public sealed class ScenePose
         var lookers = new List<LookerMarker>();
         var shoes = Cleared(_shoes);
         var pivots = Cleared(_pivots);
+        _dotScales.Clear();
+        var dots = new List<(Object3D Controller, Vector3 Position, bool Joint)>();
+        var bones = new List<(Object3D Parent, Vector3 From, Object3D Child, Vector3 To)>();
+        var pivotAt = new List<(Object3D Controller, int Index)>();
+        IReadOnlyList<DecoratorBatch> jointBatchesOut = [], boneBatchesOut = [];
         if (character != null)
         {
             var evaluator = Evaluator(character);
@@ -393,13 +511,7 @@ public sealed class ScenePose
                     max = Vector3.Max(max, position);
                     continue;
                 }
-                {
-                    var frame = ControllerShapes.Unscaled(world[i]);
-                    float half = shoeHalf * 0.6f;
-                    Add(pivots, position, PivotX); Add(pivots, position + Vector3.TransformNormal(Vector3.UnitX, frame) * half, PivotX);
-                    Add(pivots, position, PivotY); Add(pivots, position + Vector3.TransformNormal(Vector3.UnitY, frame) * half, PivotY);
-                    Add(pivots, position, PivotZ); Add(pivots, position + Vector3.TransformNormal(Vector3.UnitZ, frame) * half, PivotZ);
-                }
+                pivotAt.Add((controller, i));
                 if (controller is ReverseFootLocator locator)
                 {
                     if (!ShowShoeLocators || !locator.IsSolePivot) continue;
@@ -417,7 +529,7 @@ public sealed class ScenePose
                 bool isJoint = joints.Contains(controller);
                 // A reverse foot is seen as its sole outline only, with no dot at its origin
                 if (controller is not ControllerReverseFoot)
-                    Add(points, position, isJoint ? JointColor : ControllerColor);
+                    dots.Add((controller, position, isJoint));
                 min = Vector3.Min(min, position);
                 max = Vector3.Max(max, position);
                 if (!isJoint) continue;
@@ -427,9 +539,54 @@ public sealed class ScenePose
                 if (parent != null && !parent.IsShownInScene) continue;
                 int p = parent != null ? evaluator.IndexOf(parent) : -1;
                 if (p < 0 || p >= world.Length) continue;
-                Add(lines, world[p].Translation, BoneColor);
-                Add(lines, position, BoneColor);
+                bones.Add((parent!, world[p].Translation, controller, position));
             }
+
+            // Sizes: the standard dot, shrunk in dense areas (Light joint display).
+            var scene = character.Model.Scene;
+            float standardDot = DecoratorSizes.For(scene).Joint;
+            float denseFactor = scene.JointRenderSizeHighDensity;
+            float coincident = standardDot * CoincidentFraction;
+            for (int a = 0; a < dots.Count; a++)
+            {
+                float scale = 1f;
+                if (AdaptiveJointSizes && dots[a].Joint && denseFactor > 0f)
+                {
+                    float nearest = float.MaxValue;
+                    for (int b = 0; b < dots.Count; b++)
+                    {
+                        if (b == a || !dots[b].Joint) continue;
+                        float d = Vector3.Distance(dots[a].Position, dots[b].Position);
+                        if (d >= coincident && d < nearest) nearest = d;
+                    }
+                    if (nearest < float.MaxValue)
+                        scale = Math.Min(1f, nearest * denseFactor * HighDensityDotPerGap / standardDot);
+                }
+                _dotScales[dots[a].Controller] = Quantized(scale);
+            }
+            var jointBatches = new SortedDictionary<float, List<float>>();
+            foreach (var (controller, position, isJoint) in dots)
+            {
+                float scale = _dotScales[controller];
+                Add(points, position, isJoint ? JointColor : ControllerColor);
+                Add(Batch(jointBatches, scale), position, isJoint ? JointColor : ControllerColor);
+            }
+            var boneBatches = new SortedDictionary<float, List<float>>();
+            foreach (var (parentJoint, from, child, to) in bones)
+            {
+                Add(lines, from, BoneColor);
+                Add(lines, to, BoneColor);
+                var batch = Batch(boneBatches, Math.Min(DotScaleOf(parentJoint), DotScaleOf(child)));
+                Add(batch, from, BoneColor);
+                Add(batch, to, BoneColor);
+            }
+            jointBatchesOut = jointBatches.Select(kv => new DecoratorBatch(kv.Key, kv.Value.ToArray())).ToArray();
+            boneBatchesOut = boneBatches.Select(kv => new DecoratorBatch(kv.Key, kv.Value.ToArray())).ToArray();
+            // Unselected pivots (Decorators "Pivot size factor (unselected joints)"), each in
+            // proportion to its own joint's dot; the renderer draws the selection's larger ones.
+            float pivotFactor = scene.UnselectedPivotRenderSize;
+            foreach (var (controller, index) in pivotAt)
+                AddPivot(pivots, world[index], 0.5f * standardDot * DotScaleOf(controller) * pivotFactor);
             ControllerShapes.Write(shapes, character, evaluator, world, animation, time);
             // The disc's radius is 0.5 * TargetRenderSize * ratio * 0.3.
             float lookerSize = character.Model.Scene.TargetRenderSize * 0.15f;
@@ -456,11 +613,23 @@ public sealed class ScenePose
         ControllerTriangles = Reuse(shapes, ControllerTriangles);
         ShoeMarkers = Reuse(shoes, ShoeMarkers);
         PivotLines = Reuse(pivots, PivotLines);
+        JointBatches = jointBatchesOut;
+        BoneBatches = boneBatchesOut;
         Bounds = min.X <= max.X ? (min, max) : (Vector3.Zero, Vector3.Zero);
         Version++;
     }
 
     private readonly List<float> _lines = [], _points = [], _shapes = [], _shoes = [], _pivots = [];
+
+    /// <summary>A dot scale rounded to 1/32 steps, so a skeleton needs only a few draw batches.</summary>
+    private static float Quantized(float scale) =>
+        Math.Clamp(MathF.Round(scale * 32f) / 32f, MinDotScale, 1f);
+
+    private static List<float> Batch(SortedDictionary<float, List<float>> batches, float scale)
+    {
+        if (!batches.TryGetValue(scale, out var list)) batches[scale] = list = [];
+        return list;
+    }
 
     private static List<float> Cleared(List<float> list)
     {
@@ -669,12 +838,13 @@ public sealed class ScenePose
             return world;
         }
 
-        public void Write(float[] destination, IReadOnlyList<Matrix4x4> controllerWorlds, Matrix4x4? rigidWorld, ref Vector3 min, ref Vector3 max, float[]? tint = null)
+        /// <param name="at">The first vertex written in <paramref name="destination"/>; <see cref="First"/> when null.</param>
+        public void Write(float[] destination, IReadOnlyList<Matrix4x4> controllerWorlds, Matrix4x4? rigidWorld, ref Vector3 min, ref Vector3 max, float[]? tint = null, float tintAlpha = 1f, int? at = null)
         {
             if (rigidWorld is { } rigid) _pointMatrices.AsSpan().Fill(rigid);
             else Skin.PointMatrices(controllerWorlds, _pointMatrices);
             var controlPoints = Skin.ControlPoints;
-            var span = destination.AsSpan(First * MeshVertexFloats, VertexCount * MeshVertexFloats);
+            var span = destination.AsSpan((at ?? First) * MeshVertexFloats, VertexCount * MeshVertexFloats);
             Span<Vector3> p = stackalloc Vector3[3];
             for (int v = 0; v < VertexCount; v += 3)
             {
@@ -692,7 +862,9 @@ public sealed class ScenePose
                         : faceNormal;
                     n = n.LengthSquared() > 0 ? Vector3.Normalize(n) : Vector3.UnitY;
                     uint point = _points[v + k];
-                    var c = tint != null ? WeightColor(point < tint.Length ? tint[point] : 0f) : _colors[v + k];
+                    var c = tint != null
+                        ? Vector3.Lerp(_colors[v + k], WeightColor(point < tint.Length ? tint[point] : 0f), tintAlpha)
+                        : _colors[v + k];
                     var uv = _uvs[v + k];
                     var o = (v + k) * MeshVertexFloats;
                     span[o] = p[k].X; span[o + 1] = p[k].Y; span[o + 2] = p[k].Z;

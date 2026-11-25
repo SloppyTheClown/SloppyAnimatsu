@@ -12,27 +12,21 @@ namespace SloppyAnimatsu.Tests;
 public class DialogLayoutTests
 {
     [Fact]
-    public void Preferences_WalksThePageListEveryValueThenSaveAndCancel()
+    public void Preferences_WalksThePageListEveryValueThenTheButtons()
     {
+        DialogStop[] buttons = [DialogStop.PageDefaults];
         Assert.Equal(
-            new[]
-            {
-                DialogStop.PageList, DialogStop.PageValue, DialogStop.PageValue, DialogStop.PageValue,
-                DialogStop.PageSave, DialogStop.PageCancel,
-            },
+            new[] { DialogStop.PageList, DialogStop.PageValue, DialogStop.PageValue, DialogStop.PageValue }.Concat(buttons),
             DialogLayout.Stops(DialogId.Preferences, 3));
-        Assert.Equal(
-            new[] { DialogStop.PageList, DialogStop.PageSave, DialogStop.PageCancel },
-            DialogLayout.Stops(DialogId.Preferences));
+        Assert.Equal(new[] { DialogStop.PageList }.Concat(buttons), DialogLayout.Stops(DialogId.Preferences));
         // A negative count has no value box, and one page's boxes always sit between the list and the
-        // buttons, so Save and Cancel keep their places on every page.
+        // buttons, so the buttons keep their places on every page.
         Assert.Equal(DialogLayout.Stops(DialogId.Preferences), DialogLayout.Stops(DialogId.Preferences, -4));
         for (int values = 0; values <= 4; values++)
         {
             var stops = DialogLayout.Stops(DialogId.Preferences, values);
             Assert.Equal(DialogStop.PageList, stops[0]);
-            Assert.Equal(DialogStop.PageSave, stops[^2]);
-            Assert.Equal(DialogStop.PageCancel, stops[^1]);
+            Assert.Equal(buttons, stops.TakeLast(1));
             Assert.Equal(values, stops.Count(stop => stop == DialogStop.PageValue));
         }
     }
@@ -171,9 +165,10 @@ public class DialogLayoutTests
     public void Enter_InvokesEachDialogsDefault()
     {
         var preferences = DialogLayout.Stops(DialogId.Preferences, 2);
-        // Two value boxes put Save at 3; Enter saves from a box and from no focus at all.
-        Assert.Equal(DialogKeyAction.Invoke(3), DialogLayout.Key(DialogId.Preferences, preferences, 1, DialogKey.Enter));
-        Assert.Equal(DialogKeyAction.Invoke(3), DialogLayout.Key(DialogId.Preferences, preferences, -1, DialogKey.Enter));
+        // Preferences write as they change: Enter stays with the focused control (a text box applies its
+        // value) and never closes the window.
+        Assert.Equal(DialogKeyAction.None, DialogLayout.Key(DialogId.Preferences, preferences, 1, DialogKey.Enter));
+        Assert.Equal(DialogKeyAction.None, DialogLayout.Key(DialogId.Preferences, preferences, -1, DialogKey.Enter));
 
         var shortcuts = DialogLayout.Stops(DialogId.Shortcuts);
         Assert.Equal(DialogKeyAction.Invoke(5), DialogLayout.Key(DialogId.Shortcuts, shortcuts, 0, DialogKey.Enter));
@@ -203,8 +198,7 @@ public class DialogLayoutTests
     public void Escape_CancelsOrClosesEachDialog()
     {
         var preferences = DialogLayout.Stops(DialogId.Preferences, 2);
-        // Cancel is the last stop: 0 list, 1-2 values, 3 save, 4 cancel.
-        Assert.Equal(DialogKeyAction.Invoke(4), DialogLayout.Key(DialogId.Preferences, preferences, 1, DialogKey.Escape));
+        Assert.Equal(DialogKeyAction.Close, DialogLayout.Key(DialogId.Preferences, preferences, 1, DialogKey.Escape));
         // The shortcut dialog's Escape is its armed capture first; with nothing armed the window closes.
         Assert.Equal(
             DialogKeyAction.CancelCapture,
@@ -241,6 +235,8 @@ public class DialogLayoutTests
                 foreach (var key in Enum.GetValues<DialogKey>())
                 {
                     var action = DialogLayout.Key(dialog, stops, index, key);
+                    // The one deliberate exception: Enter in Preferences belongs to the focused control.
+                    if (dialog == DialogId.Preferences && key == DialogKey.Enter) continue;
                     Assert.NotEqual(DialogKeyKind.None, action.Kind);
                     if (action.Kind is DialogKeyKind.Focus or DialogKeyKind.Invoke)
                         Assert.InRange(action.Index, 0, stops.Count - 1);

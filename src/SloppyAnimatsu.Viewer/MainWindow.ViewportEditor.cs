@@ -284,14 +284,15 @@ public sealed partial class MainWindow
                 {
                     Object3D[] controllers = _selectedAll.Where((Object3D c) => session.Evaluator.IndexOf(c) >= 0).ToArray();
                     string reason = null;
-                    if (_selected is Character placed)
+                    if (IsPlacedObject(_selected))
                     {
                         if (InPaintAndCheck)
                         {
-                            _status.Text = "Paint & Check poses controllers only; leave it to place the character.";
+                            _status.Text = "Paint & Check poses controllers only; leave it to place the object.";
                             return false;
                         }
-                        transformDrag = session.BeginPlacement(placed);
+                        // Scaling an object that is not a controller is a rig change: Rigging only.
+                        transformDrag = session.BeginPlacement(_selected!, allowScale: _animation == null);
                     }
                     else if (InPaintAndCheck)
                     {

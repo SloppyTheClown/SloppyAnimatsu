@@ -20,7 +20,11 @@ public sealed partial class MainWindow
         _axisCubes.Obstacles = AxisCubeObstacles;
         _axisCubes.Aligned += (view, axis, flat) =>
         {
-            if (view >= 0 && view < _viewStates.Count) _focusedView = view;
+            if (view >= 0 && view < _viewStates.Count && view != _focusedView)
+            {
+                _focusedView = view;
+                LoadFocusedViewDisplay();
+            }
             RefreshMenu();
             string prefix = _viewStates.Count > 1 ? $"View {view + 1}: " : "";
             _status.Text = $"{prefix}{AxisCube.Label(axis)} side, {(flat ? "flat" : "perspective")}.";
