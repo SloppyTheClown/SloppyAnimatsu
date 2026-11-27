@@ -128,13 +128,16 @@ public class MenuModelTests
         var hammer = Row(menu, "_Remove selection from active stack");
         Assert.Equal(MenuCommand.Hammer, hammer.Command);
         Assert.True(hammer.Enabled);
-        Assert.False(Row(menu, "_Mirror pose").Enabled);
+        // Mirror pose mirrors the pose on screen in every mode, so a selection is all it needs.
+        Assert.True(Row(menu, "_Mirror pose").Enabled);
         Assert.DoesNotContain(menu.Children, entry => entry.Header == "_Add selection to active stack");
 
-        // Back in the rest pose with a controller selected: Mirror pose runs; with an animation shown it does not.
+        // Mirror pose runs with a controller selected, on the rest pose and with an animation shown;
+        // with nothing selected it does not.
         var rest = new MenuState { HasScene = true, Context = InterfaceContext.Rigging, SelectionCount = 1 };
         Assert.True(Row(Menu(rest, "_Edit"), "_Mirror pose").Enabled);
-        Assert.False(Row(Menu(rest with { HasAnimation = true }, "_Edit"), "_Mirror pose").Enabled);
+        Assert.True(Row(Menu(rest with { HasAnimation = true }, "_Edit"), "_Mirror pose").Enabled);
+        Assert.False(Row(Menu(rest with { SelectionCount = 0 }, "_Edit"), "_Mirror pose").Enabled);
 
         // A stack with no selected key: Create key runs, the key commands do not.
         var stackOnly = new MenuState { HasScene = true, HasAnimation = true, HasStack = true };
@@ -559,6 +562,27 @@ public class MenuModelTests
     }
 
     [Fact]
+    public void BankContextMenu_OffersOnlyWhatAppliesToTheClickedRow()
+    {
+        var state = new MenuState { HasScene = true, HasAnimBank = true, HasAnimation = true, HasBankFolder = true, SelectionCount = 1 };
+        string[] perRow = ["_Copy", "_Delete", "_Rename…"];
+
+        // Empty space: nothing to copy, delete or rename.
+        var empty = Headers(MenuModel.AnimationContextItems(state, BankRowKind.None));
+        Assert.Empty(perRow.Intersect(empty));
+        Assert.Contains("_New animation", empty);
+
+        // An animation: all three, and one general Rename (no animation/folder-specific rows).
+        var animation = Headers(MenuModel.AnimationContextItems(state, BankRowKind.Animation));
+        Assert.All(perRow, header => Assert.Contains(header, animation));
+        Assert.DoesNotContain(animation, h => h.Contains("animation…", StringComparison.Ordinal) || h.Contains("folder…", StringComparison.Ordinal));
+
+        // A folder: Copy (with its contents), Delete and Rename.
+        var folder = Headers(MenuModel.AnimationContextItems(state, BankRowKind.Folder));
+        Assert.All(perRow, header => Assert.Contains(header, folder));
+    }
+
+    [Fact]
     public void EveryMenuRowIsRunnableUnlessItIsALabelOrASeparator()
     {
         // A state where every menu is filled in: every command of the enum must appear somewhere.
@@ -583,6 +607,9 @@ public class MenuModelTests
             RecentFiles = [@"C:\a.akt"],
             Cameras = ["Front"],
             AnimatedCameras = ["Cam1"],
+            Plugins = [new SloppyAnimatsu.Core.Plugins.PluginMenuState(
+                new SloppyAnimatsu.Core.Plugins.PluginInfo("p", "P", "1", ""), true,
+                [new SloppyAnimatsu.Core.Plugins.PluginCommand("go", "_Go")])],
         };
         var commands = MenuModel.Commands(state);
         // Cycle Step / Cycle Side run from the CYCLEMAKER panel's buttons only.

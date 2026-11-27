@@ -17,7 +17,9 @@ public class RestPoseEditingTests
     {
         var model = TestFiles.LoadScene(path);
         if (Candidate(model) is not var (character, joint, animations)) return;
-        var editor = new RestPoseEditor(character);
+        // Parity mode: the key count below follows akeytsu's rule (every track visited). The
+        // default mode is held by Convert_KeepsEveryAnimatedWorld_AfterAnEditAboveAReverseFoot.
+        var editor = new RestPoseEditor(character) { AkeytsuParity = true };
         var evaluator = new PoseEvaluator(character);
         int slot = editor.SlotOf(joint);
         var before = animations.Select(a => Sample(evaluator, a, slot)).ToList();
@@ -214,13 +216,80 @@ public class RestPoseEditingTests
             var plainStale = plainTangents.Select(t => t.Value).ToList();
             var reverseStale = reverseTangents.Select(t => t.Value).ToList();
 
-            Assert.True(new RestPoseEditor(character).Resolve(RestPoseResolution.ConvertAnimations) > 0);
+            Assert.True(new RestPoseEditor(character) { AkeytsuParity = true }.Resolve(RestPoseResolution.ConvertAnimations) > 0);
 
             Assert.False(plainStale.SequenceEqual(plainTangents.Select(t => t.Value)),
                 "the conversion did not recompute the track's tangents");
             Assert.True(reverseStale.SequenceEqual(reverseTangents.Select(t => t.Value)),
                 "the conversion recomputed a reverse-foot track's tangents");
             return;
+        }
+    }
+
+    /// <summary>
+    /// Convert Animations keeps the animation as it looked - every animated world, on keys and
+    /// in-betweens, reverse feet and their pinned in-betweens included - after a rest edit of the
+    /// joint above a reverse foot's leg (the edit that put pinned handles in the character's face).
+    /// Both the solved worlds and the drawn ones are held: an unpinned handle is drawn at its rest
+    /// offset from the chain's leaf, so the reverse foot's rest has to travel with the leg - which
+    /// also keeps it on the foot in the rest pose.
+    /// </summary>
+    [SceneTheory, SceneSamples]
+    public void Convert_KeepsEveryAnimatedWorld_AfterAnEditAboveAReverseFoot(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        foreach (var character in model.Scene.Characters)
+        {
+            var editor = new RestPoseEditor(character);
+            foreach (var foot in character.Controllers.OfType<ControllerReverseFoot>())
+            {
+                Object3D? upper = null;
+                for (var p = foot.Chain.Count > 0 ? foot.Chain[0].Parent3D : null; p != null && upper == null; p = p.Parent3D)
+                    if (p is Joint j && editor.CanEdit(j, out _)) upper = j;
+                if (upper == null) continue;
+                var animations = character.Animations
+                    .Where(a => a.Stacks.Any(s => !s.IsAdditive && s.Tracks.Any(t => ReferenceEquals(t.Target, foot))))
+                    .Take(2).ToList();
+                if (animations.Count == 0) continue;
+
+                static int LastFrame(Animation a) => Math.Min(40, a.Stacks.SelectMany(s => s.Keys).Select(k => k.Time).DefaultIfEmpty(0).Max());
+                var before = new PoseEvaluator(character);
+                var expected = animations.Select(a => Enumerable.Range(0, LastFrame(a) + 1).Select(t => before.WorldMatrices(a, t)).ToList()).ToList();
+                var expectedDrawn = animations.Select(a => Enumerable.Range(0, LastFrame(a) + 1).Select(t => before.DisplayWorldMatrices(a, t)).ToList()).ToList();
+                int footIndex = character.Controllers.ToList().IndexOf(foot), leafIndex = character.Controllers.ToList().IndexOf(foot.Chain[^1]);
+                var restBefore = before.DisplayWorldMatrices(null, 0);
+                Matrix4x4.Invert(restBefore[leafIndex], out var toLeafBefore);
+                var footOnLeafBefore = restBefore[footIndex] * toLeafBefore;
+
+                editor.SetLocal(upper, PoseEvaluator.Compose(editor.GetLocal(upper),
+                    new Transform(new Vector3(60f, 20f, -30f), Quaternion.CreateFromYawPitchRoll(0.3f, 0.2f, 0f), Vector3.One)));
+                editor.Resolve(RestPoseResolution.ConvertAnimations);
+
+                var after = new PoseEvaluator(character);
+                var restAfter = after.DisplayWorldMatrices(null, 0);
+                Matrix4x4.Invert(restAfter[leafIndex], out var toLeafAfter);
+                Assert.True(AktMath.MaxDifference(footOnLeafBefore, restAfter[footIndex] * toLeafAfter) < 1e-2f,
+                    $"{foot.Name}'s rest left {foot.Chain[^1].Name}");
+                for (int a = 0; a < animations.Count; a++)
+                    for (int t = 0; t < expected[a].Count; t++)
+                    {
+                        Check(expected[a][t], after.WorldMatrices(animations[a], t), "solved");
+                        Check(expectedDrawn[a][t], after.DisplayWorldMatrices(animations[a], t), "drawn");
+
+                        void Check(Matrix4x4[] wanted, Matrix4x4[] world, string kind)
+                        {
+                            for (int i = 0; i < world.Length; i++)
+                            {
+                                if (character.Controllers[i] is Mesh) continue;
+                                var want = wanted[i].Translation;
+                                float distance = Vector3.Distance(want, world[i].Translation);
+                                Assert.True(distance < 0.05f + 1e-3f * want.Length(),
+                                    $"{animations[a].Name} f{t} {character.Controllers[i].Name} ({kind}) moved {distance}");
+                            }
+                        }
+                    }
+                return;
+            }
         }
     }
 
@@ -272,12 +341,12 @@ public class RestPoseEditingTests
     }
 
     [SceneTheory, SceneSamples]
-    public void EditingAJoint_RefitsTheReverseFootShoe(string path)
+    public void EditingAJoint_RefitsTheReverseFootShoe_InAkeytsuMode(string path)
     {
         var model = TestFiles.LoadScene(path);
         foreach (var character in model.Scene.Characters)
         {
-            var editor = new RestPoseEditor(character);
+            var editor = new RestPoseEditor(character) { AkeytsuParity = true };
             var rig = new RigEditor(character);
             foreach (var foot in character.Controllers.OfType<ControllerReverseFoot>())
             {

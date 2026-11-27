@@ -124,6 +124,26 @@ public class DialogLayoutTests
     }
 
     [Fact]
+    public void ExportSettings_SettingsOnlyDropsTheScopeAndTheHiddenToggles()
+    {
+        var hidden = SloppyAnimatsu.Core.Fbx.FbxExportSettings.SettingsOnlyHiddenOptions;
+        // Every hidden label names a real toggle, so the window and the model hide the same rows.
+        foreach (string label in hidden)
+            Assert.Contains(SloppyAnimatsu.Core.Fbx.FbxExportSettings.Options, o => o.Label == label);
+
+        var full = DialogLayout.ExportSettingsStops(settingsOnly: false);
+        var settingsOnly = DialogLayout.ExportSettingsStops(settingsOnly: true);
+        Assert.Equal(DialogLayout.Stops(DialogId.ExportSettings), full);
+        Assert.Equal(full.Count - 1 - hidden.Count, settingsOnly.Count);
+        Assert.DoesNotContain(DialogStop.ExportScope, settingsOnly);
+        Assert.Equal(full.Count(s => s == DialogStop.ExportOption) - hidden.Count,
+            settingsOnly.Count(s => s == DialogStop.ExportOption));
+        Assert.Equal(DialogLayout.Initial(DialogId.ExportSettings), settingsOnly[0]);
+        Assert.Equal(DialogKeyAction.Invoke(settingsOnly.Count - 2),
+            DialogLayout.Key(DialogId.ExportSettings, settingsOnly, 0, DialogKey.Enter));
+    }
+
+    [Fact]
     public void Tab_WalksTheWholeOrderAndWrapsBothWays()
     {
         foreach (var dialog in Enum.GetValues<DialogId>())

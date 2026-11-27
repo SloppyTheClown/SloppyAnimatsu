@@ -89,8 +89,8 @@ public sealed partial class MainWindow
             _ => true,
         };
         // An IK chain in the selection gives rotate mode its centre circle: the chain's swivel.
-        // Only animation keys swivel; the rest pose has no IK keys to keep the chain's end on.
-        _spinnerDial.Swivel = _animation != null && _selectedAll.Any(o => o is ControllerIK);
+        // Animation keys and the Paint & Check pose swivel; the rest pose itself does not.
+        _spinnerDial.Swivel = (_animation != null || InPaintAndCheck) && _selectedAll.Any(o => o is ControllerIK);
         _spinnerDial.Snap = _animation != null && _selectedAll.Any(o => o is ControllerIK);
     }
 

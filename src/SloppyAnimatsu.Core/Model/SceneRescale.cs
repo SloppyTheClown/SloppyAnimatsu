@@ -10,6 +10,9 @@ namespace SloppyAnimatsu.Core.Model;
 /// meshes, groups) to 1 and moves that scale into the data below it: child translations, pose
 /// and key translations, and mesh vertices. Every world position stays where it was, so a rig
 /// imported with a large root scale and counter-scaled meshes reads as a 1x rig of the same size.
+/// It also sets joint and controller scales that drifted a hair off 1 (float round-off piled up
+/// by earlier imports and edits, like 1.00002) to exactly 1, in their matrices, poses and scale
+/// tracks; a track is only touched when every key is that close to 1, so real scale animation stays.
 /// </para>
 /// <para>
 /// <see cref="ScaleUniformly"/> multiplies every translation and vertex by one factor, which
@@ -53,12 +56,14 @@ public sealed class SceneRescale
     public static bool SceneNeedsNormalizing(SceneModel model)
     {
         var controllers = ControllerSet(model);
-        return model.Scene.Descendants<Object3D>().Any(o => !controllers.Contains(o.Source) && HasScaleToNormalize(o));
+        return model.Scene.Descendants<Object3D>().Any(o => !controllers.Contains(o.Source) && HasScaleToNormalize(o))
+            || ControllerScaleDrift(model) > 0;
     }
 
     /// <summary>
     /// Sets the uniform scale of every character, mesh and group to 1, keeping every world
-    /// position. Joints and controllers keep their scale (it is part of their animation).
+    /// position. Joints and controllers keep a real scale (it is part of their animation), but
+    /// their float drift around 1 is set to exactly 1 (<see cref="ControllerDriftTolerance"/>).
     /// </summary>
     public static SceneRescale Normalize(SceneModel model) => Run(model, rootFactor: 1f, normalize: true);
 
@@ -255,7 +260,221 @@ public sealed class SceneRescale
                 result.ScalePoints(target.Source, "VertexArray", f);
         }
 
+        // 5. Joints and controllers: float drift around a scale of 1 becomes exactly 1.
+        if (normalize) result.CleanedControllerScales = result.CleanControllerScales(model, apply: true);
+
         return result;
+    }
+
+    /// <summary>
+    /// How far a joint or controller scale axis may sit from 1 and still count as drift, which
+    /// <see cref="Normalize"/> sets to exactly 1. Drift is what imports, re-derived rest poses
+    /// and rounding leave behind (1.000002, 0.99998, up to ~2e-4 seen in real rigs). Scale
+    /// animation moves further than this and is kept. Used for rest matrices; key values use
+    /// <see cref="KeyDriftTolerance"/>.
+    /// </summary>
+    private const float ControllerDriftTolerance = 1e-3f;
+
+    /// <summary>
+    /// How far a joint or controller scale <em>key value</em> may sit from 1 and still count as
+    /// drift. Rebased and re-solved animation leaves more than rest matrices do: leg chains and
+    /// reverse-foot keys of a real rig carried up to ~2e-3 (1.00166, 0.99872, max 1.95e-3 over
+    /// 44,849 tracks), with no cluster of values above 2.5e-3 - beyond that the values spread
+    /// evenly, as real scale animation does. Each value is judged on its own, so the drifted rest
+    /// keys of a track that also animates its scale (1 -> 1.5 -> 1) are cleaned too.
+    /// </summary>
+    internal const float KeyDriftTolerance = 2.5e-3f;
+
+    /// <summary>Whether a scale key value is drift to set to 1: not 1, within <see cref="KeyDriftTolerance"/> (NaN is not).</summary>
+    private static bool IsKeyDrift(float v) => v != 1f && MathF.Abs(v - 1f) <= KeyDriftTolerance;
+
+    /// <summary>How many joint/controller rest matrices and key tracks had their scale drift set to exactly 1.</summary>
+    public int CleanedControllerScales { get; private set; }
+
+    /// <summary>How many joint/controller rest matrices and key tracks <see cref="Normalize"/> would clean to a scale of exactly 1.</summary>
+    public static int ControllerScaleDrift(SceneModel model) => new SceneRescale().CleanControllerScales(model, apply: false);
+
+    /// <summary>
+    /// Sets near-1 scales of joints and controllers to exactly 1: their stored local matrices
+    /// (<c>LTM</c>), their slots in every character pose, and every scale key value within
+    /// <see cref="KeyDriftTolerance"/> of 1 (scale tangents go to 0, since tangents are slopes,
+    /// when the whole track becomes a constant 1). Rotation and translation are kept, so a child moves by at
+    /// most the removed drift times its offset. Returns how many matrices and tracks change.
+    /// </summary>
+    private int CleanControllerScales(SceneModel model, bool apply)
+    {
+        int count = 0;
+        var controllers = new HashSet<AktObject>();
+        foreach (var c in model.Scene.Descendants<Character>().SelectMany(c => c.Controllers))
+        {
+            if (c is Blendshape || !controllers.Add(c.Source)) continue;
+            if (UnitScaleMatrix(c.Source.Get<float[]>("LTM")) is not { } clean) continue;
+            count++;
+            if (apply) Replace(c.Source, "LTM", clean);
+        }
+
+        foreach (var pose in model.Scene.Descendants<CharacterPose>())
+        {
+            var items = SceneValues.Items(pose.Source, "Matrices");
+            List<object?>? copy = null;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (items[i] is not float[] a || UnitScaleMatrix(a) is not { } clean) continue;
+                copy ??= new List<object?>(items);
+                copy[i] = clean;
+                count++;
+            }
+            if (copy != null && apply) Replace(pose.Source, "Matrices", copy);
+        }
+
+        foreach (var track in model.Scene.Descendants<AnimTrack>())
+        {
+            if (track.Target is not { } target || !controllers.Contains(target.Source)) continue;
+            var values = SceneValues.Items(track.Source, "KeyList");
+            if (values.Count == 0) continue;
+            if (MapScales(values, v => IsKeyDrift(v) ? 1f : v) is not IList<object?> cleanValues) continue;
+            count++;
+            if (!apply) continue;
+            Replace(track.Source, "KeyList", cleanValues);
+            // Scale tangents are flattened only when the whole track is now a constant 1; a track
+            // that still animates its scale keeps its tangents. NaN floats (seen in cached render
+            // copies of keys) are left as they are and do not count.
+            bool allOne = true;
+            MapScales(cleanValues, v => { if (!float.IsNaN(v) && v != 1f) allOne = false; return v; });
+            if (!allOne) continue;
+            foreach (var field in new[] { "TInList", "TOutList" })
+            {
+                var tangents = SceneValues.Items(track.Source, field);
+                if (tangents.Count > 0 && MapScales(tangents, _ => 0f) is { } flat) Replace(track.Source, field, flat);
+            }
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// A copy of row-major matrix <paramref name="a"/> with its 3x3 part replaced by its pure
+    /// rotation, when every row length is within <see cref="ControllerDriftTolerance"/> of 1 but
+    /// not already 1 (within <see cref="Transform.ScaleRoundOff"/>); else null. Mirrored matrices
+    /// are left alone.
+    /// </summary>
+    private static float[]? UnitScaleMatrix(float[] a)
+    {
+        if (a.Length < 16) return null;
+        float off = 0;
+        for (int r = 0; r < 3; r++)
+        {
+            float d = MathF.Abs(MathF.Sqrt(a[r * 4] * a[r * 4] + a[r * 4 + 1] * a[r * 4 + 1] + a[r * 4 + 2] * a[r * 4 + 2]) - 1f);
+            if (!(d <= ControllerDriftTolerance)) return null;
+            off = MathF.Max(off, d);
+        }
+        if (off <= Transform.ScaleRoundOff) return null;
+        var m = AktMath.ToMatrix(a);
+        if (m.GetDeterminant() <= 0) return null;
+        var rotation = Matrix4x4.CreateFromQuaternion(Quaternion.Normalize(Transform.FromMatrixLoose(m).Rotation));
+        var b = (float[])a.Clone();
+        b[0] = rotation.M11; b[1] = rotation.M12; b[2] = rotation.M13;
+        b[4] = rotation.M21; b[5] = rotation.M22; b[6] = rotation.M23;
+        b[8] = rotation.M31; b[9] = rotation.M32; b[10] = rotation.M33;
+        return b;
+    }
+
+    /// <summary>
+    /// Passes every scale float of a key list (a transform key's <c>Key</c> and <c>RenderKey</c>
+    /// scale, an IK key's chain record scales) through <paramref name="map"/>; returns a changed
+    /// copy of the list (packed stays packed), or null when no value changed. Values are compared
+    /// with <c>Equals</c>, so a NaN mapped to itself counts as unchanged.
+    /// </summary>
+    internal static object? MapScales(IList<object?> items, Func<float, float> map)
+    {
+        if (TransformFloats.Of(items, allowIK: true) is { } packed)
+        {
+            var column = packed.Column;
+            var offsets = new List<int> { packed.Layout.Sx, packed.Layout.Sy, packed.Layout.Sz };
+            foreach (var axis in new[] { "ScaleX", "ScaleY", "ScaleZ" })
+                if (column.FloatOffset(axis, 0, "RenderKey") is >= 0 and var o) offsets.Add(o);
+            var (slot, stride, first, width) = ChainMember(column, "Scale");
+            AktMrsKeyColumn? copy = null;
+            for (int i = 0; i < column.Count; i++)
+            {
+                foreach (int o in offsets)
+                {
+                    float v = column.ElementFloats(i)[o], w = map(v);
+                    if (w.Equals(v)) continue;
+                    copy ??= column.CopyPacked();
+                    copy.ElementFloats(i)[o] = w;
+                }
+                if (slot < 0) continue;
+                var records = column.Records(slot, i);
+                float[]? changed = null;
+                for (int j = 0; j < records.Length / stride; j++)
+                    for (int c = 0; c < width; c++)
+                    {
+                        int k = j * stride + first + c;
+                        float w = map(records[k]);
+                        if (w.Equals(records[k])) continue;
+                        changed ??= (float[])records.Clone();   // record arrays are shared with copies
+                        changed[k] = w;
+                    }
+                if (changed == null) continue;
+                copy ??= column.CopyPacked();
+                copy.SetRecords(slot, i, changed);
+            }
+            return copy;
+        }
+
+        List<object?>? list = null;
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (items[i] is not AktStruct key) continue;
+            AktStruct? clone = null;
+            foreach (var part in new[] { "Key", "RenderKey" })
+            {
+                if (key[part] is not AktStruct trs) continue;
+                foreach (var axis in new[] { "ScaleX", "ScaleY", "ScaleZ" })
+                {
+                    if (trs[axis] is not float v) continue;
+                    float w = map(v);
+                    if (w.Equals(v)) continue;
+                    clone ??= key.Clone();
+                    clone.Get<AktStruct>(part).Set(axis, w);
+                }
+            }
+            var refs = SceneValues.Items(key, "RefArray");
+            for (int j = 0; j < refs.Count; j++)
+            {
+                if (refs[j] is not AktStruct entry || entry["Scale"] is not float[] s) continue;
+                float[]? changed = null;
+                for (int c = 0; c < Math.Min(3, s.Length); c++)
+                {
+                    float w = map(s[c]);
+                    if (w.Equals(s[c])) continue;
+                    changed ??= (float[])s.Clone();
+                    changed[c] = w;
+                }
+                if (changed == null) continue;
+                clone ??= key.Clone();
+                ((AktStruct)SceneValues.Items(clone, "RefArray")[j]!).Set("Scale", changed);
+            }
+            if (clone == null) continue;
+            list ??= new List<object?>(items);
+            list[i] = clone;
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// The records slot of an IK key's <c>RefArray</c> in a packed list, with the record stride and
+    /// the first float and count (at most 3) of record member <paramref name="name"/>; slot -1
+    /// when the keys have no chain records or the records lack the member.
+    /// </summary>
+    private static (int Slot, int Stride, int First, int Width) ChainMember(AktMrsKeyColumn column, string name)
+    {
+        int m = column.Shape.MemberIndex("RefArray");
+        if (m < 0 || column.Shape.Part[m] != MrsPart.Records) return (-1, 0, 0, 0);
+        var record = column.Shape.Struct[m]!;
+        int k = record.IndexOf(name);
+        if (k < 0 || record.Width[k] == 0) return (-1, 0, 0, 0);
+        return (column.Shape.At[m], record.Stride, record.Offset[k], Math.Min(3, record.Width[k]));
     }
 
     /// <summary>

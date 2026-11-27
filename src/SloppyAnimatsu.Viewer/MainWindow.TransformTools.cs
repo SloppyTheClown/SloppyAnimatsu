@@ -158,11 +158,10 @@ public sealed partial class MainWindow
             int group = g;
             var button = new ToggleButton
             {
-                Content = ChannelGroups[g].Symbol, Width = 20, Height = 20, Padding = new Thickness(0), FontSize = 12,
-                HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center,
+                Width = 20, Height = 20, Padding = new Thickness(0),
             };
             // The hover text is the group's name; a click turns the whole group on or off.
-            ToolTip.SetTip(button, ChannelGroups[g].Name);
+            PanelIcons.Apply(button, ChannelGroups[g].Name, GroupIcon(g));
             button.Click += delegate
             {
                 _channelMask = ToggleGroup(_channelMask, GroupBits(group));
@@ -179,27 +178,40 @@ public sealed partial class MainWindow
         }
         _transformActions =
         [
-            MakeAction("Reset to ref pose", "Put the ticked channels of the selected controllers back to their rest values at this frame.", ResetTicked),
-            MakeAction("Copy", "Copy the ticked channels of the selected keys of the selected controllers (Ctrl+C).", CopyKeys),
-            MakeAction("Paste", "Paste onto the selected keys (Ctrl+V).", () => PasteKeys(after: false)),
-            MakeAction("Insert After Key", "Paste after the selected keys.", () => PasteKeys(after: true)),
-            MakeAction("Mirror (flip)", "Mirror the ticked channels of the selected keys onto the opposite side.", MirrorKeys),
-            MakeAction("Reset & Freeze", "Rigging context: bake the selected unskinned mesh's transform into its geometry and reset the transform.", ResetAndFreeze),
+            MakeAction("Reset to ref pose", PanelIcons.ResetToRefPose(), "Put the ticked channels of the selected controllers back to their rest values at this frame.", ResetTicked),
+            MakeAction("Copy", PanelIcons.CopyKeys(), "Copy the ticked channels of the selected keys of the selected controllers (Ctrl+C).", CopyKeys),
+            MakeAction("Paste", PanelIcons.PasteKeys(), "Paste onto the selected keys (Ctrl+V).", () => PasteKeys(after: false)),
+            MakeAction("Insert After Key", PanelIcons.InsertAfterKey(), "Paste after the selected keys.", () => PasteKeys(after: true)),
+            MakeAction("Mirror (flip)", PanelIcons.MirrorPose(), "Mirror the selected controllers' ticked channels onto the other side of the body (centre joints turn as if reflected). With timeline keys selected, mirrors those keys instead.", MirrorTicked),
+            MakeAction("Reset & Freeze", PanelIcons.ResetAndFreeze(), "Rigging context: bake the selected unskinned mesh's transform into its geometry and reset the transform.", ResetAndFreeze),
         ];
         SyncFreezeButton();
         SyncChannelMask();
 
-        static Button MakeAction(string text, string tip, Action click)
+        // Each action is an icon button; its name and what it does are on the hover text.
+        static Button MakeAction(string text, Control icon, string tip, Action click)
         {
             var button = new Button
             {
-                Content = text, FontSize = 11, Padding = new Thickness(6, 3), MinWidth = 0,
-                HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Center,
+                Height = 22, Padding = new Thickness(0), MinWidth = 0,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
             };
             ToolTip.SetTip(button, tip);
+            PanelIcons.Apply(button, text, icon, 14);
             button.Click += delegate { click(); };
             return button;
         }
+
+        // The channel-group toggles, in ChannelGroups order.
+        static Control GroupIcon(int group) => group switch
+        {
+            0 => PanelIcons.TranslateGroup(),
+            1 => PanelIcons.RotateGroup(),
+            2 => PanelIcons.ScaleGroup(),
+            3 => PanelIcons.PoleGroup(),
+            4 => PanelIcons.FootGroup(),
+            _ => PanelIcons.BlendshapeGroup(),
+        };
     }
 
     /// <summary>The channel filter Copy and Mirror use: the ticked channels.</summary>
@@ -240,9 +252,10 @@ public sealed partial class MainWindow
     {
         if (_drag != null || _timeline.IsDragging) return;
         PoseEditSession? session = Session;
-        if (session == null || _animation == null)
+        bool checkPose = InPaintAndCheck;
+        if (session == null || (_animation == null && !checkPose))
         {
-            _status.Text = "Reset works on an animation; in the rigging context edit the rest pose directly.";
+            _status.Text = "Reset works on an animation or on Paint & Check; the rest pose is the reference itself.";
             return;
         }
         Object3D[] controllers = _selectedAll.Where(c => session.Evaluator.IndexOf(c) >= 0).ToArray();
@@ -255,7 +268,7 @@ public sealed partial class MainWindow
         int frame = (int)MathF.Round(_time);
         RunKeyEdit(delegate
         {
-            if (session.ResetChannels(_animation, controllers, frame, _channelMask & KeyEditor.MrsChannels, out string? reason) == 0)
+            if (session.ResetChannels(_animation, controllers, frame, _channelMask & KeyEditor.MrsChannels, out string? reason, checkPose) == 0)
                 _status.Text = reason ?? "Nothing was reset.";
         });
         UpdateSelection(forceSpinner: true);
@@ -276,7 +289,14 @@ public sealed partial class MainWindow
             bool animates = _animation != null && stack != null && track != null && (track.Channels & bit) != 0;
             bool editable = animates && !stack!.IsAdditive;
             float? value = null;
-            if (channel >= 13)
+            if (channel is >= 10 and <= 12 && InPaintAndCheck && selected is ControllerReverseFoot foot && evaluator != null)
+            {
+                // Paint & Check: the check pose's own roll, twist and bank.
+                var angles = evaluator.CheckFootAngles(foot);
+                value = (channel == 10 ? angles.X : channel == 11 ? angles.Y : angles.Z) * 180f / MathF.PI;
+                editable = true;
+            }
+            else if (channel >= 13)
             {
                 if (animates && track is BlendshapeTrack blend && evaluator != null)
                     value = evaluator.LayerBlendshapeValues(stack!, blend, _time, out _)[channel - 13];
@@ -378,7 +398,7 @@ public sealed partial class MainWindow
         _play.IsChecked = false;
         RunKeyEdit(delegate
         {
-            if (session.SetScalarChannel(_animation, controllers, frame, channel, value, out string? reason) == 0)
+            if (session.SetScalarChannel(_animation, controllers, frame, channel, value, out string? reason, InPaintAndCheck) == 0)
                 _status.Text = reason ?? "The value was not applied.";
         });
         UpdateSelection(forceSpinner: true);
@@ -394,6 +414,24 @@ public sealed partial class MainWindow
     private void SyncFreezeButton()
     {
         if (_transformActions != null) DisabledHint.SetEnabled(_transformActions[^1], CanResetAndFreeze(), "the Rigging context on the rest pose, and selected meshes that can be frozen");
+        SyncTransformKeyActions();
+    }
+
+    /// <summary>
+    /// Copy, Paste and Insert After Key work on timeline keys, so they are greyed out (with the
+    /// reason on the hover text) when no animation stack is active, nothing is copied, or no key
+    /// is selected. Called on selection, context and timeline-key changes.
+    /// </summary>
+    private void SyncTransformKeyActions()
+    {
+        if (_transformActions == null) return;
+        AnimStack? stack = _animation != null ? _timeline.ActiveStack : null;
+        bool keyed = stack != null && stack is not AudioStack;
+        bool selected = keyed && _timeline.SelectedKeys.Count > 0;
+        bool beforeEnd = keyed && _timeline.SelectedKeys.Any(k => k < stack!.Keys.Count - 1);
+        DisabledHint.SetEnabled(_transformActions[1], selected, "an animation with keys selected on the timeline");
+        DisabledHint.SetEnabled(_transformActions[2], keyed && _clipboard != null, "copied keys and an animation with an active stack");
+        DisabledHint.SetEnabled(_transformActions[3], beforeEnd && _clipboard != null, "copied keys and a selected key before the end key");
     }
 
     private void ResetAndFreeze()
@@ -432,6 +470,7 @@ public sealed partial class MainWindow
             ReloadAfterRescale();
         AfterCharBankHistoryStep(step);
         AfterSceneDeleteHistoryStep(step);
+        AfterSharedBankHistoryStep(step);
     }
 
     private IEnumerable<Control> TransformToolControls()

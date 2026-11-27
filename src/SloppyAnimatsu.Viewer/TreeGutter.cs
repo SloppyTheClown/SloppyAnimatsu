@@ -69,7 +69,7 @@ public sealed class TreeGutter : Control
         // Only the box's own level toggles; a press on an ancestor's line does nothing.
         if (e.GetPosition(this).X < _depth * Indent) return;
         e.Handled = true;
-        Toggled?.Invoke(e.KeyModifiers.HasFlag(KeyModifiers.Control));
+        Toggled?.Invoke(e.KeyModifiers.HasFlag(KeyModifiers.Alt)); // Alt+click: whole hierarchy below
     }
 
     public override void Render(DrawingContext context)

@@ -44,22 +44,24 @@ public sealed partial class MainWindow
             return _drag == null;
         }
 
-        RestPoseResolution? answer = await RestPoseDialog.Ask(this, session.RestPose.ChangedSlots.Count);
+        var peers = SharedAnimBanks.PeersOf(session.Character);
+        var (answer, follow) = await RestPoseDialog.Ask(this, session.RestPose.ChangedSlots.Count,
+            peers.Select(p => p.Name ?? "(unnamed)").ToList());
         if (answer is not { } resolution)
         {
             _status.Text = "The ref pose change is still pending.";
             return false;
         }
 
-        ResolveRestPose(session, resolution);
+        ResolveRestPose(session, resolution, follow ? peers : null);
         return true;
     }
 
-    private void ResolveRestPose(PoseEditSession session, RestPoseResolution resolution)
+    private void ResolveRestPose(PoseEditSession session, RestPoseResolution resolution, IReadOnlyList<Character>? followers = null)
     {
         try
         {
-            session.ResolveRestPose(resolution);
+            session.ResolveRestPose(resolution, followers);
             _status.Text = _history.NextUndo.Description + ".";
             _dirty = true;
             UpdateTitle();
@@ -246,9 +248,31 @@ public sealed partial class MainWindow
         });
     }
 
-    private void MirrorPose()
+    /// <summary>
+    /// The TRANSFORM window's Mirror: mirrors the selected timeline keys when an animation has
+    /// some selected, otherwise the pose on screen (the animation at the playhead, Paint &amp;
+    /// Check, or the rest pose).
+    /// </summary>
+    private void MirrorTicked()
     {
-        if (_drag != null || _animation != null)
+        if (_animation != null && _timeline.ActiveStack is { } stack
+            && _timeline.SelectedKeys.Any(k => k < stack.Keys.Count - 1))
+        {
+            MirrorKeys();
+            return;
+        }
+        MirrorPose(KeyChannelFilter);
+    }
+
+    /// <summary>
+    /// Mirrors the selected controllers onto their other-side counterparts in the pose on screen;
+    /// central controllers turn as if reflected onto themselves. One undo step.
+    /// </summary>
+    private void MirrorPose() => MirrorPose(KeyEditor.AllChannels);
+
+    private void MirrorPose(AnimChannels channels)
+    {
+        if (_drag != null || _timeline.IsDragging)
         {
             return;
         }
@@ -259,15 +283,21 @@ public sealed partial class MainWindow
         }
         if (_selectedAll.Count == 0)
         {
-            _status.Text = "Select the objects to mirror in the rest pose.";
+            _status.Text = "Select the controllers to mirror.";
             return;
         }
         Object3D[] sources = _selectedAll.ToArray();
+        bool checkPose = InPaintAndCheck;
+        Animation animation = checkPose ? null : _animation;
+        _play.IsChecked = false;
+        int frame = (int)MathF.Round(_time);
         RunKeyEdit(delegate
         {
-            int num = session.MirrorPose((IReadOnlyCollection<Object3D>)(object)sources);
-            _status.Text = ((num == 0) ? "Nothing to mirror." : $"Mirrored {num} object(s) in the rest pose.");
+            int num = session.MirrorPoseAt(animation, sources, frame, checkPose, out string reason, null, channels);
+            string where = checkPose ? "in Paint & Check" : animation == null ? "in the rest pose" : $"at frame {frame}";
+            _status.Text = num == 0 ? reason ?? "Nothing to mirror." : $"Mirrored {num} controller(s) {where}.";
         });
+        UpdateSelection(forceSpinner: true);
     }
 
     private void CycleStep()

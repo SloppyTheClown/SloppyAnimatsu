@@ -40,11 +40,11 @@ public sealed partial class MainWindow
     private Control CharBankBody()
     {
         if (_charBankPanel != null) return _charBankPanel;
-        _createCharacterButton = CharBankButton("Create Character", "Create Character: add a new, empty character to the scene.", CreateCharacter);
-        _createRefPoseButton = CharBankButton("Create Ref Pose",
+        _createCharacterButton = CharBankButton("Create Character", PanelIcons.CreateCharacter(), "Create Character: add a new, empty character to the scene.", CreateCharacter);
+        _createRefPoseButton = CharBankButton("Create Ref Pose", PanelIcons.CreateRefPose(),
             "Create Ref Pose: a reference pose of its own, built from the character's current state (pose it in Paint & Check first). The animations follow it after the REFERENCE POSE dialog.",
             CreateRefPose);
-        _deleteRefPoseButton = CharBankButton("Delete Ref Pose", "Delete Ref Pose: the Bind Pose acts as the reference pose again.", DeleteRefPose);
+        _deleteRefPoseButton = CharBankButton("Delete Ref Pose", PanelIcons.DeleteRefPose(), "Delete Ref Pose: the Bind Pose acts as the reference pose again.", DeleteRefPose);
         var buttons = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,*"), Margin = new Thickness(0, 0, 0, 4) };
         Grid.SetColumn(_createRefPoseButton, 1);
         Grid.SetColumn(_deleteRefPoseButton, 2);
@@ -63,11 +63,10 @@ public sealed partial class MainWindow
         return _charBankPanel;
     }
 
-    private static Button CharBankButton(string text, string tip, Action action)
+    private static Button CharBankButton(string text, Control icon, string tip, Action action)
     {
         var button = new Button
         {
-            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, FontSize = 9.0 },
             MinHeight = 0.0,
             Height = 30.0,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -77,6 +76,8 @@ public sealed partial class MainWindow
             Padding = new Thickness(1.0, 0.0),
         };
         ToolTip.SetTip(button, tip);
+        // 20 px: the drawing scaled up to fill the 30 px high button.
+        PanelIcons.Apply(button, text, icon, 20.0);
         button.Click += (_, _) => action();
         return button;
     }
@@ -87,6 +88,7 @@ public sealed partial class MainWindow
         bool shown = CharBankShown;
         if (_bankTitle != null) _bankTitle.Text = shown ? "CHAR BANK" : "ANIM BANK";
         _animations.IsVisible = !shown;
+        UpdateSharedBankMarks();
         if (_charBankPanel == null || _charBankList == null) return;
         _charBankPanel.IsVisible = shown;
         if (!shown) return;
@@ -168,13 +170,6 @@ public sealed partial class MainWindow
     private bool InPaintAndCheck =>
         _animation == null && _character != null && _pose != null
         && CharacterBank.CurrentRow(_character).Kind == CharacterBankRowKind.PaintAndCheck;
-
-    /// <summary>Drops every character's Paint &amp; Check pose (it is never saved).</summary>
-    private void ClearCheckPoses()
-    {
-        if (_pose == null) return;
-        foreach (var character in _pose.Model.Scene.Characters) _pose.Evaluator(character).ClearCheckPose();
-    }
 
     private bool BankRowRefusesRestEdit(out string reason)
     {
@@ -264,12 +259,25 @@ public sealed partial class MainWindow
             _status.Text = row.Label + " is already current.";
             return;
         }
-        ClearCheckPoses();
+        // Paint & Check's pose stays on the character while another row is current (and is saved
+        // with the scene); the step keeps a copy so Undo puts back exactly what was there.
+        var checkPose = _pose?.Evaluator(character) is { } evaluator ? (evaluator, evaluator.CheckPoseValues()) : default;
         RunRigEdit(CharBankStep + row.Label, _ =>
         {
             CharacterBank.Select(character, row);
             return null;
         }, "pick a CHAR BANK row");
+        if (!_rigEditFailed && checkPose.evaluator != null && checkPose.Item2 != null
+            && _history.NextUndo is { } step && step.Description == CharBankStep + row.Label)
+            step.Before.CheckPose = checkPose;
+        // Paint & Check opens on a custom reference pose, not the bind pose, unless it kept a pose.
+        if (!_rigEditFailed && row.Kind == CharacterBankRowKind.PaintAndCheck && _pose != null
+            && !_pose.Evaluator(character).HasCheckPose
+            && CharacterBank.CanDeleteRefPose(character) && character.RefPose is { } reference)
+        {
+            _pose.Evaluator(character).StartCheckPoseFrom(reference);
+            Apply();
+        }
         if (!_rigEditFailed) _status.Text = CharBankModeStatus(character);
         AfterCharBankChange();
     }
@@ -326,13 +334,23 @@ public sealed partial class MainWindow
             _status.Text = "Create Ref Pose needs a bound character whose Bind Pose acts as the reference pose.";
             return;
         }
+        // In Paint & Check the new reference pose is exactly the pose shown there, IK chains
+        // included, and Paint & Check stays current with that pose.
+        var check = InPaintAndCheck && _pose != null ? _pose.Evaluator(character) : null;
+        bool fromCheck = check != null && check.CheckPoseChanges().Count > 0;
         RunRigEdit(CharBankStep + "Create Ref Pose", _ =>
         {
-            if (CharacterBank.CreateRefPose(character) == null)
+            var created = fromCheck ? CharacterBank.CreateRefPoseFromCheckPose(character, check!) : CharacterBank.CreateRefPose(character);
+            if (created == null)
                 throw new InvalidOperationException("the scene's schema cannot hold a reference pose.");
             return null;
         }, "create a reference pose");
-        if (!_rigEditFailed) _status.Text = "Created a Ref Pose for " + character.Name + "; rest edits now write it.";
+        if (!_rigEditFailed)
+        {
+            _status.Text = fromCheck
+                ? "Created a Ref Pose for " + character.Name + " from the Paint & Check pose; pick the Ref Pose row to edit it."
+                : "Created a Ref Pose for " + character.Name + "; rest edits now write it.";
+        }
         AfterCharBankChange();
     }
 

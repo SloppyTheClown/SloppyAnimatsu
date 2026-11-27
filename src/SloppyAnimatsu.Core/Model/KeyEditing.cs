@@ -925,30 +925,8 @@ public sealed partial class KeyEditor
         var animation = stack.Animation!;
         float time = stack.Keys[keyIndex].Time;
         var local = EditPose(stack, controller, time, out var world);
-        int root = Evaluator.IndexOf(joints[0]), tip = Evaluator.IndexOf(joints[end]);
-        var p0 = world[root].Translation;
-        var axis = world[tip].Translation - p0;
-        if (axis.LengthSquared() < 1e-12f) return false;
-        // Row vectors: a point is moved to the pivot, turned, and moved back.
-        var swing = Matrix4x4.CreateTranslation(-p0) * Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), angle)
-            * Matrix4x4.CreateTranslation(p0);
-
-        int pi = joints[0].Parent3D is { } p ? Evaluator.IndexOf(p) : -1;
-        var parentWorld = pi >= 0 ? world[pi] : Matrix4x4.Identity;
-        int ep = joints[end].Parent3D is { } q ? Evaluator.IndexOf(q) : -1;
-        var endParentWorld = ep >= 0 ? world[ep] : Matrix4x4.Identity;
-        if (!Matrix4x4.Invert(parentWorld, out var inverseParent) || !Matrix4x4.Invert(endParentWorld * swing, out var inverseEndParent))
+        if (!SwivelLocals(Evaluator, joints[0], joints[end], local, world, angle, out var rootLocal, out var endLocal))
             return false;
-        var rootLocal = Transform.FromMatrixLoose(world[root] * swing * inverseParent) with
-        {
-            Translation = local[root].Translation,
-            Scale = local[root].Scale,
-        };
-        var endLocal = Transform.FromMatrixLoose(world[tip] * inverseEndParent) with
-        {
-            Translation = local[tip].Translation,
-            Scale = local[tip].Scale,
-        };
         SetEditKey(stack, keyIndex, controller, joints[0], rootLocal, AnimChannels.Rotate);
         SetEditKey(stack, keyIndex, controller, joints[end], endLocal, AnimChannels.Rotate);
         if (foot != null) StoreFoot(stack, keyIndex, foot, time, storeLeg: true);
@@ -956,6 +934,46 @@ public sealed partial class KeyEditor
         foreach (var other in Evaluator.IKControllersInSolveOrder)
             if (!ReferenceEquals(other, controller)) Follow(stack, keyIndex, other, joints[0]);
         AddPoleAngle(stack, keyIndex, controller, angle);
+        return true;
+    }
+
+    /// <summary>
+    /// The swivel of a chain in any pose layer (keys or Paint &amp; Check's pose): the new rotation
+    /// locals of its first joint <paramref name="root"/> and its end joint <paramref name="end"/>
+    /// when the chain swings by <paramref name="angle"/> radians about the line between them, from
+    /// the pose's <paramref name="local"/> and <paramref name="world"/> (indexed like the
+    /// evaluator's controllers). The first joint turns about that line, the end joint keeps its
+    /// world orientation, translation and scale stay. False when the chain is folded onto its base.
+    /// </summary>
+    public static bool SwivelLocals(PoseEvaluator evaluator, Object3D root, Object3D end, Transform[] local,
+        Matrix4x4[] world, float angle, out Transform rootLocal, out Transform endLocal)
+    {
+        rootLocal = endLocal = Transform.Identity;
+        int r = evaluator.IndexOf(root), tip = evaluator.IndexOf(end);
+        if (r < 0 || tip < 0) return false;
+        var p0 = world[r].Translation;
+        var axis = world[tip].Translation - p0;
+        if (axis.LengthSquared() < 1e-12f) return false;
+        // Row vectors: a point is moved to the pivot, turned, and moved back.
+        var swing = Matrix4x4.CreateTranslation(-p0) * Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), angle)
+            * Matrix4x4.CreateTranslation(p0);
+
+        int pi = root.Parent3D is { } p ? evaluator.IndexOf(p) : -1;
+        var parentWorld = pi >= 0 ? world[pi] : Matrix4x4.Identity;
+        int ep = end.Parent3D is { } q ? evaluator.IndexOf(q) : -1;
+        var endParentWorld = ep >= 0 ? world[ep] : Matrix4x4.Identity;
+        if (!Matrix4x4.Invert(parentWorld, out var inverseParent) || !Matrix4x4.Invert(endParentWorld * swing, out var inverseEndParent))
+            return false;
+        rootLocal = Transform.FromMatrixLoose(world[r] * swing * inverseParent) with
+        {
+            Translation = local[r].Translation,
+            Scale = local[r].Scale,
+        };
+        endLocal = Transform.FromMatrixLoose(world[tip] * inverseEndParent) with
+        {
+            Translation = local[tip].Translation,
+            Scale = local[tip].Scale,
+        };
         return true;
     }
 

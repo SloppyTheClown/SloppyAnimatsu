@@ -269,8 +269,8 @@ public sealed partial class MainWindow : Window, IViewportEditor
 
     private readonly ToggleButton _play = new ToggleButton
     {
-        Content = "Play",
-        Width = 64.0
+        // The icon is set in the constructor (PanelIcons.Play); 40 px matches the stepping buttons' width.
+        Width = 40.0
     };
 
     /// <summary>

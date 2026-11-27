@@ -268,20 +268,12 @@ public sealed partial class MainWindow
 
     private Control SetUpButtons()
     {
-        Button button = new Button
-        {
-            Content = "Export set up...",
-            FontSize = 11.0
-        };
+        Button button = PanelIcons.Apply(new Button { Padding = new Thickness(4.0, 2.0) }, "Export set up…", PanelIcons.ExportSetUp(), 14.0);
         button.Click += async delegate
         {
             await ExportBlendshapeSetUp();
         };
-        Button button2 = new Button
-        {
-            Content = "Import set up...",
-            FontSize = 11.0
-        };
+        Button button2 = PanelIcons.Apply(new Button { Padding = new Thickness(4.0, 2.0) }, "Import set up…", PanelIcons.ImportSetUp(), 14.0);
         button2.Click += async delegate
         {
             await ImportBlendshapeSetUp();

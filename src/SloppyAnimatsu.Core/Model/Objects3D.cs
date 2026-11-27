@@ -183,6 +183,16 @@ public sealed class Character : Object3D
     /// <summary>Whether <see cref="Controllers"/> would return exactly <paramref name="list"/>, without building it.</summary>
     public bool ControllersMatch(IReadOnlyList<Object3D> list) => RefsMatch("Controllers", list);
 
+    /// <summary>
+    /// Paint &amp; Check's runtime pose, kept on the character (not in an evaluator) so a rebuilt
+    /// scene pose, a context switch or a CHAR BANK row change keeps it; saved by
+    /// <see cref="CheckPoseStore"/>. Read and written through <see cref="PoseEvaluator"/>.
+    /// </summary>
+    internal CheckPoseSlots? CheckPose { get; set; }
+
+    /// <summary>Whether <see cref="CheckPose"/> was read from the scene file yet.</summary>
+    internal bool CheckPoseRead { get; set; }
+
     public CharacterPose? RefPose
     {
         get => Ref<CharacterPose>("RefPose");
@@ -205,7 +215,11 @@ public sealed class Character : Object3D
         get => Ref<CharacterPose>("CurrentPose");
         set => SetRef("CurrentPose", value);
     }
-    public CharacterPose? RefPoseOld => Ref<CharacterPose>("RefPoseOld");
+    public CharacterPose? RefPoseOld
+    {
+        get => Ref<CharacterPose>("RefPoseOld");
+        set => SetRef("RefPoseOld", value);
+    }
 
     public Animation? CurrentAnimation
     {
@@ -224,8 +238,9 @@ public sealed class Character : Object3D
 
     public IEnumerable<CharacterPose> BindPoses => (Child("__BindPoses") as Folder)?.Descendants<CharacterPose>() ?? [];
 
-    /// <summary>Meshes bound to one of this character's poses (they may live outside the character).</summary>
-    public IEnumerable<Mesh> Meshes => Model.Scene.Meshes.Where(m => m.BindPose?.Character == this);
+    /// <summary>Meshes skinned to this character (<see cref="Mesh.BoundCharacter"/>; they may live
+    /// outside the character). An unbound mesh that still remembers this character's bind pose is not one.</summary>
+    public IEnumerable<Mesh> Meshes => Model.Scene.Meshes.Where(m => m.BoundCharacter == this);
 
     public IEnumerable<ControllerIK> IKControllers => Controllers.OfType<ControllerIK>();
 

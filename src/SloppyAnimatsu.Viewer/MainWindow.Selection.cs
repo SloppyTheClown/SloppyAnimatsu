@@ -44,6 +44,7 @@ public sealed partial class MainWindow
         CharacterPlayback? remembered = character != null && _character != character && animationName == null
             && RememberedPlayback(character) is { Animation: not null } r ? r : null;
         _character = character;
+        UpdateSharedBankMarks();
         _placement = null;
         _hotPoint = null;
         _syncing = true;
@@ -120,6 +121,7 @@ public sealed partial class MainWindow
         }
         if (context == InterfaceContext.Rigging)
         {
+            CaptureRigOutlines();
             if (_animation != null)
             {
                 SelectAnimation(null, null, switchContext: true);
@@ -159,8 +161,26 @@ public sealed partial class MainWindow
         }
         else
         {
-            SetContext(MenuModel.OtherContext(_pose.Model.Scene.Context));
+            RequestContext(MenuModel.OtherContext(_pose.Model.Scene.Context));
         }
+    }
+
+    /// <summary>
+    /// The user's context switch (Tab, the context button, the menu): leaving Rigging with a
+    /// reference-pose change the animations were not resolved against raises the modal REFERENCE
+    /// POSE dialog first, and closing it without an answer stays in Rigging.
+    /// </summary>
+    private async void RequestContext(InterfaceContext context)
+    {
+        if (_pose == null) return;
+        if (context == InterfaceContext.Animation && _pose.Model.Scene.Context == InterfaceContext.Rigging
+            && !await LeaveRestPose())
+        {
+            return;
+        }
+        if (context == InterfaceContext.Animation && _pose.Model.Scene.Context == InterfaceContext.Rigging)
+            await OfferRigCopy();
+        SetContext(context);
     }
 
     private void RefreshContextButton()
@@ -200,7 +220,7 @@ public sealed partial class MainWindow
             return;
         }
         // The Anim Bank shows the bank of the character the picked object belongs to.
-        Character? owner = (o as Character) ?? (o as Mesh)?.BindPose?.Character ?? o.Ancestor<Character>();
+        Character? owner = (o as Character) ?? (o as Mesh)?.BoundCharacter ?? o.Ancestor<Character>();
         if (owner != null && owner != _character)
         {
             if (!await LeaveRestPose())
@@ -616,6 +636,7 @@ public sealed partial class MainWindow
         (undo ? record.Before : record.After).Restore();
         if (_document != null) _document.Document.Dirty = true;
         RebuildAfterSceneDelete();
+        AfterSharedBankHistoryStep(record);
         _status.Text = (undo ? "Undid: " : "Redid: ") + record.Description;
         MemoryLog.Mark(_status.Text, _history.Count);
         return true;

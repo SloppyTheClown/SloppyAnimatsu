@@ -28,7 +28,7 @@ page. To run the tests or contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Alpha (0.3.0-alpha): a work in progress, not affiliated with akeytsu or its authors.
+Alpha: a work in progress, not affiliated with akeytsu or its authors.
 
 ## License
 

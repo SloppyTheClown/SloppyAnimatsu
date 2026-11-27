@@ -37,6 +37,28 @@ public static class RestPosePrompt
                $"({controllers} changed.)";
     }
 
+    /// <summary>
+    /// The extra paragraph for a character that shares its Anim Bank with <paramref name="peers"/>:
+    /// the shared animations are keyed against every member's reference pose, so a change that the
+    /// others do not follow makes the same keys pose them differently.
+    /// </summary>
+    public static string SharedBankWarning(IReadOnlyList<string> peers) =>
+        $"This character shares its Anim Bank with {JoinNames(peers)}. The shared animations are keyed " +
+        "against each character's reference pose: if the others keep their old pose, the converted " +
+        "animations will pose them differently from now on (tilted or twisted joints), and any edit " +
+        "you make to a shared animation is copied to them as it is.";
+
+    /// <summary>The check box that makes the linked characters follow the change.</summary>
+    public static string FollowLabel(IReadOnlyList<string> peers) =>
+        $"Also change the reference pose of {JoinNames(peers)} to match";
+
+    private static string JoinNames(IReadOnlyList<string> names) => names.Count switch
+    {
+        0 => "no other character",
+        1 => names[0],
+        _ => string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1],
+    };
+
     /// <summary>The resolution a button picks; Cancel (or an index that is no button) is null.</summary>
     public static RestPoseResolution? Resolve(int choiceIndex) =>
         choiceIndex >= 0 && choiceIndex < Choices.Count ? Choices[choiceIndex].Resolution: null;

@@ -482,6 +482,37 @@ public class AnimationBankTests
     }
 
     [SceneTheory, SceneSamples]
+    public void CopyFolder_DuplicatesItsContentsBesideItAndUndoes(string path)
+    {
+        var model = TestFiles.LoadScene(path);
+        if (FirstAnimation(model) is not var (character, animation)) return;
+        var session = new PoseEditSession(new ScenePose(model), character);
+        var folder = session.CreateFolder();
+        var inner = session.CreateFolder();
+        session.MoveToFolder([animation], inner);
+        session.MoveToFolder([inner], folder);
+        int count = character.Animations.Count();
+
+        var copy = session.CopyFolder(folder);
+
+        Assert.NotSame(folder, copy);
+        Assert.Same(folder.Parent, copy.Parent);
+        Assert.NotEqual(folder.Name, copy.Name);
+        Assert.Equal(count + 1, character.Animations.Count());
+        var copiedInner = Assert.IsType<Folder>(Assert.Single(copy.Children));
+        Assert.Equal(inner.Name, copiedInner.Name);
+        var copiedAnimation = Assert.IsType<Animation>(Assert.Single(copiedInner.Children));
+        Assert.Equal(animation.Name, copiedAnimation.Name);
+        Assert.NotSame(animation.Source, copiedAnimation.Source);
+        Assert.Equal(animation.Stacks.Sum(s => s.Tracks.Count()), copiedAnimation.Stacks.Sum(s => s.Tracks.Count()));
+        Assert.Throws<InvalidOperationException>(() => session.CopyFolder(character.AnimBank!));
+
+        Assert.True(session.Undo());
+        Assert.Null(copy.Source.Parent);
+        Assert.Equal(count, character.Animations.Count());
+    }
+
+    [SceneTheory, SceneSamples]
     public void DeleteFolder_RemovesItsContentsAndUndoes(string path)
     {
         var model = TestFiles.LoadScene(path);

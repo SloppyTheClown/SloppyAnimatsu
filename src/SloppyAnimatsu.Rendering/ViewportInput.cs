@@ -60,6 +60,9 @@ public interface IViewportPointerHost
     /// </summary>
     void RightClick(Vector2 editPoint);
 
+    /// <summary>A middle click (a middle press that did not move) at the edit point.</summary>
+    void MiddleClick(Vector2 editPoint) { }
+
     /// <summary>The pointer hovered with no button held: the gizmo's hover handle and the Scanner's point.</summary>
     void Hover(Vector2 position);
 
@@ -216,10 +219,10 @@ public sealed class ViewportInput
     /// The pointer was released at <paramref name="position"/>. <paramref name="left"/> and
     /// <paramref name="right"/> name the button the press was made with: a left press that did not
     /// move picks (with <paramref name="toggle"/> for Ctrl), a right press that did not move is the
-    /// right click, both only while the pointer is still over the active view. An edit or tool drag
-    /// is kept.
+    /// right click and a middle press that did not move (<paramref name="middle"/>) is the middle
+    /// click, all only while the pointer is still over the active view. An edit or tool drag is kept.
     /// </summary>
-    public void Release(IViewportPointerHost host, Vector2 position, bool left, bool right, bool toggle)
+    public void Release(IViewportPointerHost host, Vector2 position, bool left, bool right, bool toggle, bool middle = false)
     {
         bool pressed = _last != null;
         _last = null;
@@ -242,6 +245,7 @@ public sealed class ViewportInput
         {
             if (left) host.Pick(host.EditPoint(position), toggle);
             else if (right) host.RightClick(host.EditPoint(position));
+            else if (middle) host.MiddleClick(host.EditPoint(position));
         }
         host.Hover(position);
     }

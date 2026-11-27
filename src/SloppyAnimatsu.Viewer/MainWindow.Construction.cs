@@ -109,7 +109,9 @@ public sealed partial class MainWindow
                     Animation animation = value as Animation;
                     if (animation != _animation)
                     {
-                        SelectAnimation((await LeaveRestPose()) ? animation : _animation, null);
+                        bool left = await LeaveRestPose();
+                        if (left && _pose?.Model.Scene.Context == InterfaceContext.Rigging) await OfferRigCopy();
+                        SelectAnimation(left ? animation : _animation, null);
                     }
                 }
             }
@@ -180,8 +182,8 @@ public sealed partial class MainWindow
             }
             else if (e.Key == Key.F2 && e.KeyModifiers == KeyModifiers.None)
             {
-                if (_bankFolder != null) _ = RenameFolder();
-                else _ = RenameAnimation();
+                // F2 renames the selected row, folder or animation.
+                _ = RenameBankItem(SelectedBankItems().FirstOrDefault() ?? _bankFolder ?? (SceneObject?)_animation);
                 e.Handled = true;
             }
         }, RoutingStrategies.Tunnel);
@@ -255,6 +257,8 @@ public sealed partial class MainWindow
         // current animation, so adding rows does not switch it.
         _animations.SelectionMode = SelectionMode.Multiple;
         _animations.ContextMenu = _animationMenu;
+        // Tunnel, so the menu is rebuilt for the clicked row before the ContextMenu opens.
+        _animations.AddHandler(ContextRequestedEvent, BankContextRequested, RoutingStrategies.Tunnel);
         _animations.ItemTemplate = new FuncDataTemplate<Item<SceneObject>>((item, _) => BankRow(item), supportsRecycling: false);
         // Compact tree rows, like the Scene panel's.
         _animations.Styles.Add(new Avalonia.Styling.Style(x => Avalonia.Styling.Selectors.OfType<ListBoxItem>(x))
@@ -324,7 +328,7 @@ public sealed partial class MainWindow
         // it is (gestures come from the shortcuts map). Hotkeys.ReachesCommands keeps plain and Shift
         // keys away from commands while a text field has the focus; such a KeyDown is left unhandled,
         // because on Windows a handled KeyDown also swallows the typed character.
-        AddHandler(InputElement.KeyDownEvent, delegate(object? _, KeyEventArgs e)
+        void RouteKey(KeyEventArgs e)
         {
             if (e.Handled || ShortcutInput.FromKey(e.Key, e.KeyModifiers) is not { } key) return;
             bool typing = FocusManager?.GetFocusedElement() is TextBox;
@@ -333,7 +337,17 @@ public sealed partial class MainWindow
             string? argument = entry.Argument;
             Dispatcher.UIThread.Post(() => RunMenuCommand(command, argument));
             e.Handled = true;
-        }, RoutingStrategies.Bubble);
+        }
+        AddHandler(InputElement.KeyDownEvent, (object? _, KeyEventArgs e) => RouteKey(e), RoutingStrategies.Bubble);
+        // Tab is taken by focus navigation (moving between buttons) before a bubbling handler sees
+        // it, so a bound Tab (Change Interface Context by default) is run on the way down, wherever
+        // the focus is. A focused text field still gets its own Tab.
+        AddHandler(InputElement.KeyDownEvent, delegate(object? _, KeyEventArgs e)
+        {
+            if (e.Handled || e.Key != Key.Tab || FocusManager?.GetFocusedElement() is TextBox) return;
+            if (RunShortcut(e.Key, e.KeyModifiers)) e.Handled = true;
+            else RouteKey(e);
+        }, RoutingStrategies.Tunnel);
         _showCurves.IsCheckedChanged += delegate
         {
             // An opened curveboard comes to the front, as a pressed window does.
@@ -479,9 +493,15 @@ public sealed partial class MainWindow
                 }
             }
         };
+        // Icon-only: a play triangle that turns into pause bars while playing.
+        Control playIcon = PanelIcons.Play(), pauseIcon = PanelIcons.Pause();
+        PanelIcons.Apply(_play, "Play", playIcon, 14.0);
         _play.IsCheckedChanged += delegate
         {
-            _play.Content = ((_play.IsChecked == true) ? "Pause" : "Play");
+            bool playing = _play.IsChecked == true;
+            if (_play.Content is Viewbox playBox) playBox.Child = playing ? pauseIcon : playIcon;
+            Avalonia.Automation.AutomationProperties.SetName(_play, playing ? "Pause" : "Play");
+            ToolTip.SetTip(_play, playing ? "Pause" : "Play");
             if (_play.IsChecked == true)
             {
                 _clock.Restart();
@@ -623,9 +643,11 @@ public sealed partial class MainWindow
                 await ShowWelcome();
             }
         };
+        StartPlugins();
         base.Closing += (_, e) => GuardUnsavedOnClose(e);
         base.Closed += delegate
         {
+            StopPlugins();
             _autosaveTimer?.Stop();
             _audio.Dispose();
         };

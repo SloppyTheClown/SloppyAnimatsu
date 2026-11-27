@@ -51,8 +51,9 @@ public sealed partial class MainWindow
         }
         AnimStack stack = _timeline.ActiveStack;
         PoseEditSession session = Session;
-        if (stack == null || session == null)
+        if (stack == null || session == null || _animation == null)
         {
+            _status.Text = "Copy works on keys: open an animation and select keys on the timeline.";
             return;
         }
         int[] keys = _timeline.SelectedKeys.ToArray();
@@ -112,8 +113,9 @@ public sealed partial class MainWindow
         }
         AnimStack stack = _timeline.ActiveStack;
         PoseEditSession session = Session;
-        if (stack == null || session == null)
+        if (stack == null || session == null || _animation == null)
         {
+            _status.Text = "Paste works on keys: open an animation and pick a stack on the timeline.";
             return;
         }
         int[] selected = _timeline.SelectedKeys.Where((int k) => k < stack.Keys.Count - 1).ToArray();
@@ -531,6 +533,7 @@ public sealed partial class MainWindow
 
     private void UpdateKeyCommands()
     {
+        SyncTransformKeyActions();
         AnimStack stack = _timeline.ActiveStack;
         int count = _timeline.SelectedKeys.Count;
         _syncing = true;

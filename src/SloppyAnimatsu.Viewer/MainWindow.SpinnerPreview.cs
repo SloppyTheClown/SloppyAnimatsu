@@ -73,7 +73,7 @@ public sealed partial class MainWindow
             int channel = _footDragChannel;
             float value = _footDragFrom + delta;
             _extraFields[1 + axis].Show(value, force: true);
-            PreviewValue((s, ctl, f) => s.SetScalarChannel(_animation, ctl, f, channel, value * MathF.PI / 180f, out _));
+            PreviewValue((s, ctl, f) => s.SetScalarChannel(_animation, ctl, f, channel, value * MathF.PI / 180f, out _, InPaintAndCheck));
         };
         dial.FootEnded = commit =>
         {
@@ -101,16 +101,16 @@ public sealed partial class MainWindow
         for (int i = 0; i < 3; i++)
         {
             int c = i;
-            PreviewWhileDragging(_translateFields[i], (s, ctl, f, v) => s.SetChannelValue(_animation, ctl, f, c, v, out _));
-            PreviewWhileDragging(_rotateFields[i], (s, ctl, f, v) => s.SetChannelValue(_animation, ctl, f, 3 + c, v, out _));
-            PreviewWhileDragging(_scaleFields[i], (s, ctl, f, v) => s.SetChannelValue(_animation, ctl, f, 6 + c, v, out _));
+            PreviewWhileDragging(_translateFields[i], (s, ctl, f, v) => s.SetChannelValue(_animation, ctl, f, c, v, out _, InPaintAndCheck));
+            PreviewWhileDragging(_rotateFields[i], (s, ctl, f, v) => s.SetChannelValue(_animation, ctl, f, 3 + c, v, out _, InPaintAndCheck));
+            PreviewWhileDragging(_scaleFields[i], (s, ctl, f, v) => s.SetChannelValue(_animation, ctl, f, 6 + c, v, out _, InPaintAndCheck));
         }
         PreviewWhileDragging(_fovField, (s, ctl, f, v) => s.SetFov(_animation, ctl, f, v, out _));
         for (int i = 0; i < _extraFields.Length; i++)
         {
             int channel = 9 + i;
             PreviewWhileDragging(_extraFields[i], (s, ctl, f, v) =>
-                s.SetScalarChannel(_animation, ctl, f, channel, channel <= 12 ? v * MathF.PI / 180f : v, out _));
+                s.SetScalarChannel(_animation, ctl, f, channel, channel <= 12 ? v * MathF.PI / 180f : v, out _, InPaintAndCheck));
         }
     }
 

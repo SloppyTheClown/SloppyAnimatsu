@@ -6,6 +6,15 @@ namespace SloppyAnimatsu.Core.Model;
 /// <see cref="MenuModel"/> builds into its own items and runs the command a click names. That keeps
 /// the structure, the enabled and checked state and what a click carries testable without a window
 /// </summary>
+/// <summary>What an Anim Bank right-click landed on.</summary>
+public enum BankRowKind
+{
+    /// <summary>The empty space below the rows, or the rest pose row.</summary>
+    None,
+    Animation,
+    Folder,
+}
+
 public enum MenuCommand
 {
     // File
@@ -76,6 +85,10 @@ public enum MenuCommand
     CycleStep,
     CycleSide,
     RetargetAnimations,
+    // The Anim Bank's right-click rows: they act on the row that was clicked.
+    CopyBankItem,
+    DeleteBankItem,
+    RenameBankItem,
 
     // Stack
     NewStack,
@@ -137,6 +150,12 @@ public enum MenuCommand
     TimelinePasteKeys,
     /// <summary>SloppyAnimatsu's own panel keys (panelShortcuts.slopa): Hammer, the timeline and curveboard keys.</summary>
     PanelKeys,
+    /// <summary>Plugins > a plugin > Enabled: turns the plugin named by the argument (its id) on or off.</summary>
+    TogglePlugin,
+    /// <summary>A plugin's own row; the argument is <c>pluginId|commandId</c> (<see cref="Plugins.PluginRegistry.CommandArgument"/>).</summary>
+    PluginCommand,
+    /// <summary>Plugins > Manage plugins: every installed plugin with its version, description and Enabled box.</summary>
+    ManagePlugins,
 }
 
 /// <summary>How a menu row is drawn: an item (a command or a disabled label), a submenu, or a separator.</summary>
@@ -227,6 +246,9 @@ public sealed record MenuState
     public bool HasStack { get; init; }
 
     public bool HasAnimBank { get; init; }
+
+    /// <summary>The installed plugins for the Plugins menu, in install order; empty shows <see cref="MenuModel.NoPlugins"/>.</summary>
+    public IReadOnlyList<Plugins.PluginMenuState> Plugins { get; init; } = [];
 
     /// <summary>A folder of the Anim Bank is selected.</summary>
     public bool HasBankFolder { get; init; }
@@ -348,7 +370,7 @@ public static class MenuModel
     [
         Submenu("_File", FileItems(state)),
         Submenu("_Edit", EditItems(state)),
-        Submenu("_Plugins", Label(NoPlugins)),
+        Submenu("_Plugins", PluginItems(state)),
         Submenu("_Help", HelpItems()),
     ];
 
@@ -465,6 +487,34 @@ public static class MenuModel
         // only requirement (a scene with fewer than two characters reports the message).
         Item("_Retarget animations…", MenuCommand.RetargetAnimations, requires: "an open scene", enabled: state.HasScene),
     ];
+
+    /// <summary>
+    /// The Anim Bank's right-click menu. It depends on what was clicked: an animation row offers
+    /// Copy, Delete and Rename for that row, a folder row the same (Copy duplicates the folder with
+    /// everything inside it); the empty space below
+    /// the rows (or the rest pose row) only what makes something new.
+    /// </summary>
+    public static IReadOnlyList<MenuEntry> AnimationContextItems(MenuState state, BankRowKind row)
+    {
+        var items = new List<MenuEntry>
+        {
+            Item("_New animation", MenuCommand.NewAnimation, requires: "an open scene with an Anim Bank", enabled: state.HasAnimBank),
+            Item("New _folder", MenuCommand.NewFolder, requires: "an open scene with an Anim Bank", enabled: state.HasAnimBank),
+        };
+        if (row != BankRowKind.None)
+        {
+            items.Add(MenuEntry.Separator);
+            items.Add(Item("_Copy", MenuCommand.CopyBankItem));
+            // Delete takes the whole selection when the clicked row is part of it.
+            items.Add(Item("_Delete", MenuCommand.DeleteBankItem));
+            items.Add(MenuEntry.Separator);
+            items.Add(Item("_Rename…", MenuCommand.RenameBankItem));
+            items.Add(Item("Rename _Tool…", MenuCommand.RenameTool));
+        }
+        items.Add(MenuEntry.Separator);
+        items.Add(Item("_Retarget animations…", MenuCommand.RetargetAnimations, requires: "an open scene", enabled: state.HasScene));
+        return items;
+    }
 
     /// <summary>The Mixer's commands, as the Stack menu.</summary>
     public static IReadOnlyList<MenuEntry> StackItems(MenuState state) =>
@@ -659,7 +709,7 @@ public static class MenuModel
             requires: "an active stack and a selected object", enabled: state.HasStack && state.SelectionCount > 0),
         MenuEntry.Separator,
         CheckItem("_Keep children fixed", MenuCommand.KeepChildrenFixed, null, state.KeepChildrenFixed),
-        Item("_Mirror pose", MenuCommand.MirrorPose, requires: "a selected object, and the rest pose shown (no animation)", enabled: !state.HasAnimation && state.SelectionCount > 0),
+        Item("_Mirror pose", MenuCommand.MirrorPose, requires: "a selected object", enabled: state.SelectionCount > 0),
         MenuEntry.Separator,
         Item("Keyboard _shortcuts…", MenuCommand.KeyboardShortcuts),
         Item("_Panel keys…", MenuCommand.PanelKeys),
@@ -805,6 +855,43 @@ public static class MenuModel
         return items.ToArray();
     }
 
+    /// <summary>
+    /// One submenu per installed plugin (its Enabled box, then its own rows while it is enabled),
+    /// then Manage plugins; only <see cref="NoPlugins"/> while none is installed.
+    /// </summary>
+    private static MenuEntry[] PluginItems(MenuState state)
+    {
+        if (state.Plugins.Count == 0) return [Label(NoPlugins)];
+        var rows = new List<MenuEntry>();
+        foreach (var plugin in state.Plugins)
+        {
+            var children = new List<MenuEntry>
+            {
+                CheckItem("_Enabled", MenuCommand.TogglePlugin, plugin.Info.Id, plugin.Enabled,
+                    toolTip: "Turns the plugin on or off. Turning it off closes its windows; what it stored in a scene stays there."),
+            };
+            if (plugin.Enabled && plugin.Commands.Count > 0)
+            {
+                children.Add(MenuEntry.Separator);
+                foreach (var command in plugin.Commands)
+                    children.Add(Item(command.Label, MenuCommand.PluginCommand,
+                        Plugins.PluginRegistry.CommandArgument(plugin.Info.Id, command.Id),
+                        enabled: command.Enabled, toolTip: command.ToolTip));
+            }
+            rows.Add(new MenuEntry
+            {
+                Header = plugin.Info.Name,
+                Kind = MenuEntryKind.Submenu,
+                Children = children.ToArray(),
+                ToolTip = plugin.Info.Description,
+            });
+        }
+        rows.Add(MenuEntry.Separator);
+        rows.Add(Item("_Manage plugins…", MenuCommand.ManagePlugins,
+            toolTip: "Every installed plugin with its version and description; turn each on or off."));
+        return rows.ToArray();
+    }
+
     private static MenuEntry[] HelpItems() =>
     [
         Item("_About Sloppy Animatsu…", MenuCommand.About),
@@ -874,6 +961,8 @@ public static class MenuModel
         foreach (MenuEntry entry in Flatten(TimelineEmptyItems(state))) yield return entry;
         foreach (MenuEntry entry in Flatten(TimelineKeyItems(state))) yield return entry;
         foreach (MenuEntry entry in Flatten(AnimationItems(state))) yield return entry;
+        foreach (BankRowKind row in Enum.GetValues<BankRowKind>())
+            foreach (MenuEntry entry in Flatten(AnimationContextItems(state, row))) yield return entry;
         foreach (MenuEntry entry in Flatten(StackItems(state))) yield return entry;
         // The tree menu has two forms (a row, or the blank space below the rows); both are menus.
         foreach (MenuEntry entry in Flatten(OutlinerItems(state with { HasTreeRow = true }))) yield return entry;

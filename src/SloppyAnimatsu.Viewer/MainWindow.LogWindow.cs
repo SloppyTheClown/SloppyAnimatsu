@@ -65,8 +65,8 @@ public partial class MainWindow
             FontFamily = new FontFamily("Consolas, Menlo, DejaVu Sans Mono, monospace"),
             FontSize = 12,
         };
-        var refresh = new Button { Content = "Refresh" };
-        var folder = new Button { Content = "Open folder" };
+        var refresh = PanelIcons.Apply(new Button { Padding = new Thickness(5.0, 3.0) }, "Refresh", PanelIcons.Refresh(), 14.0);
+        var folder = PanelIcons.Apply(new Button { Padding = new Thickness(5.0, 3.0) }, "Open folder", PanelIcons.OpenFolder(), 14.0);
 
         string? Current() => which.SelectedIndex == 1 ? AppLog.PreviousFilePath : AppLog.FilePath;
 

@@ -35,9 +35,7 @@ public sealed partial class MainWindow
     {
         var button = new ToggleButton
         {
-            Content = label,
-            FontSize = 9.0,
-            Height = 18.0,
+            Height = 20.0,
             MinHeight = 0.0,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Center,
@@ -45,6 +43,7 @@ public sealed partial class MainWindow
             Padding = new Thickness(1.0, 0.0),
         };
         ToolTip.SetTip(button, tip);
+        PanelIcons.Apply(button, label, next ? PanelIcons.NextGhosts() : PanelIcons.PreviousGhosts());
         button.IsCheckedChanged += delegate
         {
             if (!_ghostSyncing) SetGhosts(next, button.IsChecked == true);

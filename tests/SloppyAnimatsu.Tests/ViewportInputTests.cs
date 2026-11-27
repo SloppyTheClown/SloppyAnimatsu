@@ -110,6 +110,8 @@ public class ViewportInputTests
             RightClickedAt = editPoint;
         }
 
+        public void MiddleClick(Vector2 editPoint) => Calls.Add("MiddleClick");
+
         public void Hover(Vector2 position) => Calls.Add("Hover");
 
         public void ClearHighlight() => Calls.Add("ClearHighlight");
@@ -294,6 +296,25 @@ public class ViewportInputTests
         Assert.Equal(["Pick:True", "Hover"], host.Calls);
         Assert.Equal(new Vector2(12, 21), host.PickedAt); // the release point, in the edit area
         Assert.True(host.PickedToggle);
+    }
+
+    [Fact]
+    public void AMiddleClickThatDidNotMove_PicksChildren_AndAMiddleDragOnlyPans()
+    {
+        var host = new Host();
+        var input = new ViewportInput();
+        input.Press(host, Press, left: false, middle: true);
+        host.Calls.Clear();
+        input.Release(host, Press, left: false, right: false, toggle: false, middle: true);
+        Assert.Equal(["MiddleClick", "Hover"], host.Calls);
+
+        var drag = new Host();
+        var panning = new ViewportInput();
+        panning.Press(drag, Press, left: false, middle: true);
+        panning.Move(drag, Press + new Vector2(20, 0), left: false, middle: true, right: false);
+        drag.Calls.Clear();
+        panning.Release(drag, Press + new Vector2(20, 0), left: false, right: false, toggle: false, middle: true);
+        Assert.DoesNotContain("MiddleClick", drag.Calls);
     }
 
     [Fact]

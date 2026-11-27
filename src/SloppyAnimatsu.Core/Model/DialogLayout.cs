@@ -186,17 +186,30 @@ public static class DialogLayout
         DialogStop.RetargetCancel,
     ];
 
-    private static readonly DialogStop[] ExportStops =
-    [
-        .. Enumerable.Repeat(DialogStop.ExportPreset, Fbx.FbxExportSettings.Targets.Count),
-        DialogStop.ExportScope,
-        .. Enumerable.Repeat(DialogStop.ExportOption, Fbx.FbxExportSettings.FolderPathOptionIndex + 1),
-        DialogStop.ExportSeparator,
-        .. Enumerable.Repeat(DialogStop.ExportOption, Fbx.FbxExportSettings.Options.Count - Fbx.FbxExportSettings.FolderPathOptionIndex - 1),
-        DialogStop.ExportScale,
-        DialogStop.ExportRun,
-        DialogStop.ExportCancel,
-    ];
+    private static readonly IReadOnlyList<DialogStop> ExportStops = ExportSettingsStops(settingsOnly: false);
+
+    /// <summary>
+    /// The Export Settings window's stops. <paramref name="settingsOnly"/> is the window an export
+    /// preset opens, which has no scope box and none of
+    /// <see cref="Fbx.FbxExportSettings.SettingsOnlyHiddenOptions"/>.
+    /// </summary>
+    public static IReadOnlyList<DialogStop> ExportSettingsStops(bool settingsOnly)
+    {
+        var stops = new List<DialogStop>();
+        stops.AddRange(Enumerable.Repeat(DialogStop.ExportPreset, Fbx.FbxExportSettings.Targets.Count));
+        if (!settingsOnly) stops.Add(DialogStop.ExportScope);
+        var options = Fbx.FbxExportSettings.Options;
+        for (int i = 0; i < options.Count; i++)
+        {
+            if (!settingsOnly || !Fbx.FbxExportSettings.SettingsOnlyHiddenOptions.Contains(options[i].Label))
+                stops.Add(DialogStop.ExportOption);
+            if (i == Fbx.FbxExportSettings.FolderPathOptionIndex) stops.Add(DialogStop.ExportSeparator);
+        }
+        stops.Add(DialogStop.ExportScale);
+        stops.Add(DialogStop.ExportRun);
+        stops.Add(DialogStop.ExportCancel);
+        return stops;
+    }
 
     /// <summary>
     /// The stops Tab walks. A preferences page contributes one <see cref="DialogStop.PageValue"/> per

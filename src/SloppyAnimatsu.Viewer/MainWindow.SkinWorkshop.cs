@@ -117,7 +117,17 @@ public sealed partial class MainWindow
             Margin = new Thickness(1.0),
             MinHeight = 0.0
         };
+        string name = (string)button.Content;
         string baseTip = entry.ToolTip ?? entry.Header.Replace("_", "");
+        Control? icon = PanelIcons.ForRigCommand(command);
+        if (icon != null)
+        {
+            // Icon-only: the name moves into the tooltip (kept by RefreshRigAtelier, which resets it).
+            if (!baseTip.StartsWith(name, StringComparison.OrdinalIgnoreCase)) baseTip = name + ": " + baseTip;
+            ToolTip.SetTip(button, baseTip);
+            PanelIcons.Apply(button, name, icon, 16.0);
+            button.Padding = new Thickness(3.0);
+        }
         _workshopRequirements[button] = (baseTip, entry.Requires);
         ToolTip.SetTip(button, entry.Enabled ? baseTip : MenuEntry.WithRequirement(baseTip, entry.Requires));
         string? argument = entry.Argument;
@@ -169,7 +179,6 @@ public sealed partial class MainWindow
         if (orient is { Command: { } command })
         {
             Button button = WorkshopButton(orient, command);
-            button.Content = "Orient Joint";
             button.VerticalAlignment = VerticalAlignment.Stretch;
             button.VerticalContentAlignment = VerticalAlignment.Center;
             button.Margin = new Thickness(4.0, 0, 0, 0);
@@ -333,6 +342,24 @@ public sealed partial class MainWindow
             {
                 run();
             };
+            Control? icon = text switch
+            {
+                "Set" => PanelIcons.SetWeight(),
+                "Prune" => PanelIcons.PruneWeights(),
+                "Fix" => PanelIcons.FixWeights(),
+                "Flood" => PanelIcons.FloodSelection(),
+                "Mirror" => PanelIcons.MirrorWeights(),
+                "Copy" => PanelIcons.CopyWeights(),
+                "Paste" => PanelIcons.PasteWeights(),
+                "Hide" => PanelIcons.HideVertices(),
+                "Show all" => PanelIcons.ShowAllVertices(),
+                _ => null
+            };
+            if (icon != null)
+            {
+                PanelIcons.Apply(button, text, icon, 16.0);
+                button.Padding = new Thickness(3.0);
+            }
             return button;
         }
         void Header(string text, int column, TextAlignment align)

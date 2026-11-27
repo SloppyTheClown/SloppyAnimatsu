@@ -295,6 +295,7 @@ public sealed partial class MainWindow
             return;
         }
         int num = 0;
+        PluginsSceneSaving();
         try
         {
             foreach (SceneDocument document in _documents.Documents)

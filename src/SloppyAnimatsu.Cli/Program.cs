@@ -158,6 +158,17 @@ internal static partial class Program
                     [--active=name|index] [--transparent=on|off] [--nearest=on|off]]...
                                                 list materials and their texture swap lists, or
                                                 edit them
+          ezexport  <scene.slopa> [--add=Name [--item=path]... [--folder=dir] [--key=Key]
+                    [--target=name] [--scale=f]]... [--remove=Name]... [--out=out.slopa]
+                    [--run[=Name]]
+                                                list the EZ Exports presets and what they write,
+                                                add or remove presets, run all or one of them
+          banks     <scene.slopa>               list the shared Anim Bank groups
+          link-banks <scene.slopa> <reference> <character>... [--keep-duplicates] [--dry-run]
+                    [--out=out.slopa]           link characters to one shared Anim Bank (the
+                                                others take the reference's ref pose rotations)
+          unlink-bank <scene.slopa> <character> [--out=out.slopa]
+                                                leave the shared bank, keeping a full copy
           blendshape-add <scene.slopa> <character> <mesh> --target=Name --controller=Name
                     [--direction=0..3] [--attenuation=f] [--position=f] [--face=Name]
                     [--face-values=x,y] [--zone=first-last] [--zone-faces=i,j,k]
@@ -293,6 +304,10 @@ internal static partial class Program
                 "skinpaint" => SkinPaintCommand(rest),
                 "autorig" => AutoRigCommand(rest),
                 "material" => MaterialCommand(rest),
+                "ezexport" => EzExportCommand(rest),
+                "banks" => BanksCommand(rest),
+                "link-banks" => LinkBanksCommand(rest),
+                "unlink-bank" => UnlinkBankCommand(rest),
                 _ => Fail($"Unknown command '{args[0]}'.\n{Usage}"),
             };
         }

@@ -53,6 +53,36 @@ public static class MaterialSchema
     /// </summary>
     public const string ViewFlatMember = "MyAkViewFlat";
 
+    /// <summary>
+    /// Plugin data on <c>CScene</c>: one row per plugin that stored something. Ids and texts are
+    /// parallel; the references of every row are in one array, with the owning row's index beside
+    /// each in <see cref="PluginRefOwnersMember"/>. See <c>PluginSceneData</c>.
+    /// </summary>
+    public const string PluginIdsMember = "MyAkPluginIds";
+    public const string PluginDataMember = "MyAkPluginData";
+    public const string PluginRefsMember = "MyAkPluginRefs";
+    public const string PluginRefsType = "RefArray<class CDataObject>";
+    public const string PluginRefOwnersMember = "MyAkPluginRefOwners";
+
+    /// <summary>
+    /// Shared Anim Banks on <c>CScene</c>: the linked characters with the group number of each, and
+    /// the bank folders/animations with the row number of each (one row = the same item in every
+    /// member of a group). See <c>SharedAnimBanks</c>.
+    /// </summary>
+    public const string SharedBankCharactersMember = "MyAkSharedBankCharacters";
+    public const string SharedBankGroupsMember = "MyAkSharedBankGroups";
+    public const string SharedBankItemsMember = "MyAkSharedBankItems";
+    public const string SharedBankItemRowsMember = "MyAkSharedBankItemRows";
+
+    /// <summary>
+    /// Paint &amp; Check's pose on <c>CScene</c>: the posed controllers, and ten floats per controller
+    /// (translation xyz, rotation quaternion xyzw, scale xyz). See <c>CheckPoseStore</c>.
+    /// </summary>
+    public const string CheckPoseTargetsMember = "MyAkCheckPoseTargets";
+    public const string CheckPoseValuesMember = "MyAkCheckPoseValues";
+    public const string CheckPoseFeetMember = "MyAkCheckPoseFeet";
+    public const string CheckPoseFootAnglesMember = "MyAkCheckPoseFootAngles";
+
     /// <summary>Appends the members the scene's schema lacks; returns whether anything was added.</summary>
     public static bool Ensure(AktSchema schema)
     {
@@ -76,7 +106,21 @@ public static class MaterialSchema
             added |= Add(animation, AddedOrderMember, "int");
         }
         if (schema.FindClass(SceneClass) is { } scene)
+        {
             added |= Add(scene, ViewFlatMember, "bool");
+            added |= Add(scene, PluginIdsMember, NamesType);
+            added |= Add(scene, PluginDataMember, NamesType);
+            added |= Add(scene, PluginRefsMember, PluginRefsType);
+            added |= Add(scene, PluginRefOwnersMember, "vector<int>");
+            added |= Add(scene, SharedBankCharactersMember, PluginRefsType);
+            added |= Add(scene, SharedBankGroupsMember, "vector<int>");
+            added |= Add(scene, SharedBankItemsMember, PluginRefsType);
+            added |= Add(scene, SharedBankItemRowsMember, "vector<int>");
+            added |= Add(scene, CheckPoseTargetsMember, PluginRefsType);
+            added |= Add(scene, CheckPoseValuesMember, "vector<float>");
+            added |= Add(scene, CheckPoseFeetMember, PluginRefsType);
+            added |= Add(scene, CheckPoseFootAnglesMember, "vector<float>");
+        }
         return added;
     }
 

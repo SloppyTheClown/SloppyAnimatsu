@@ -26,6 +26,9 @@ public interface IViewportEditor
     /// </summary>
     void RightClick(Vector2 at);
 
+    /// <summary>A middle click (a middle press that did not move) at <paramref name="at"/>.</summary>
+    void MiddleClick(Vector2 at);
+
     /// <summary>A press on gizmo handle <paramref name="axis"/>; false refuses the drag (the press orbits instead).</summary>
     bool BeginDrag(int axis, Vector2 at);
 
@@ -229,7 +232,7 @@ public sealed class Viewport : OpenGlControlBase, IViewportPointerHost
     private Cursor? _selectCursor;
 
     /// <summary>
-    /// Shows the vertex selection pointer (red, a box and a +/- badge) while the held modifiers would
+    /// Shows the vertex selection pointer (the system arrow, a box and a +/- badge) while the held modifiers would
     /// start that gesture here, the default pointer otherwise. A running gesture keeps the pointer it
     /// started with. The window calls this on modifier key changes too, since the focus may be elsewhere.
     /// </summary>
@@ -247,8 +250,9 @@ public sealed class Viewport : OpenGlControlBase, IViewportPointerHost
         var position = e.GetPosition(this);
         bool left = e.InitialPressMouseButton == MouseButton.Left;
         bool right = e.InitialPressMouseButton == MouseButton.Right;
+        bool middle = e.InitialPressMouseButton == MouseButton.Middle;
         bool toggle = (e.KeyModifiers & KeyModifiers.Control) != 0;
-        _input.Release(this, At(position), left, right, toggle);
+        _input.Release(this, At(position), left, right, toggle, middle);
         e.Pointer.Capture(null);
         RefreshSelectCursor(e.KeyModifiers);
     }
@@ -325,6 +329,8 @@ public sealed class Viewport : OpenGlControlBase, IViewportPointerHost
     void IViewportPointerHost.Pick(Vector2 at, bool toggle) => Editor?.Pick(at, toggle);
 
     void IViewportPointerHost.RightClick(Vector2 at) => Editor?.RightClick(at);
+
+    void IViewportPointerHost.MiddleClick(Vector2 at) => Editor?.MiddleClick(at);
 
     bool IViewportPointerHost.BeginMarquee(Vector2 at, bool lasso) => Editor != null && Editor.BeginMarquee(at, lasso);
 

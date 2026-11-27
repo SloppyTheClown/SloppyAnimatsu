@@ -34,15 +34,13 @@ public sealed partial class MainWindow
     /// <summary>
     /// The operation a press with <paramref name="m"/> starts, or null when it is no vertex gesture.
     /// The gesture runs anywhere in the Rigging context (the app draws it with nothing selected and
-    /// then selects nothing). Ctrl alone keeps its object-picking meaning until there is a vertex
-    /// selection to add to.
+    /// then selects nothing). Without Shift, a Ctrl/Alt click that does not drag still picks objects
+    /// (<see cref="IViewportEditor.EndMarquee"/>), so only the drag selects control points.
     /// </summary>
     private VertexSelectOp? VertexGestureOp(KeyModifiers m)
     {
         if (_pose == null || _pose.Model.Scene.Context != InterfaceContext.Rigging) return null;
-        var op = VertexSelectRegion.OpFor((m & KeyModifiers.Shift) != 0, (m & KeyModifiers.Control) != 0, (m & KeyModifiers.Alt) != 0);
-        if (op == VertexSelectOp.Add && (m & KeyModifiers.Shift) == 0 && (_skin?.Selection.SelectedCount ?? 0) == 0) return null;
-        return op;
+        return VertexSelectRegion.OpFor((m & KeyModifiers.Shift) != 0, (m & KeyModifiers.Control) != 0, (m & KeyModifiers.Alt) != 0);
     }
 
     /// <summary>
@@ -78,8 +76,16 @@ public sealed partial class MainWindow
         _viewport.RefreshSelectCursor(modifiers);
     }
 
+    /// <summary>
+    /// The vertex selection pointer while a vertex gesture would start; otherwise, for a click on
+    /// objects, a "-" badge while Alt is held (removes) and a "+" badge while Ctrl is (adds), as
+    /// <see cref="ClickCombine"/> reads them; null keeps the default pointer.
+    /// </summary>
     Cursor? IViewportEditor.SelectCursor(KeyModifiers modifiers) =>
-        VertexGestureOp(modifiers) is { } op ? VertexSelectCursor.For(op) : null;
+        VertexGestureOp(modifiers) is { } op ? VertexSelectCursor.For(op)
+        : (modifiers & KeyModifiers.Alt) != 0 ? PickCursor.For(add: false)
+        : (modifiers & KeyModifiers.Control) != 0 ? PickCursor.For(add: true)
+        : null;
 
     bool IViewportEditor.BeginMarquee(Vector2 at, bool lasso)
     {
@@ -109,6 +115,16 @@ public sealed partial class MainWindow
         _marqueePoints.Clear();
         _marqueeShape.IsVisible = false;
         if (!commit || points.Count == 0) return;
+        // Ctrl/Alt without Shift: a click that did not drag keeps its object meaning (Ctrl adds or
+        // toggles a joint, Alt removes one; a middle click picks the hierarchy), and only a drag
+        // selects control points. Shift + click still picks the nearest control point.
+        if ((_viewport.PressModifiers & KeyModifiers.Shift) == 0
+            && points.All(p => Vector2.Distance(points[0], p) <= ViewportInput.ClickSlop))
+        {
+            if (_marqueeLasso) ((IViewportEditor)this).MiddleClick(points[0]);
+            else ((IViewportEditor)this).Pick(points[0], (_viewport.PressModifiers & KeyModifiers.Control) != 0);
+            return;
+        }
         if (!VertexSelectionAvailable())
         {
             _status.Text = "Select a skinned character (or one of its joints) to select its control points.";

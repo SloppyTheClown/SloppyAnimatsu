@@ -289,6 +289,9 @@ public sealed partial class MainWindow
             case "Play":
                 _play.IsChecked = _play.IsChecked != true;
                 return true;
+            case "ChangeInterfaceContext":
+                ToggleContext();
+                return true;
             case "NextFrame":
                 SetTime(_time + 1f);
                 return true;
@@ -666,19 +669,12 @@ public sealed partial class MainWindow
                     return 0;
                 }
                 _play.IsChecked = false;
-                if (InPaintAndCheck)
-                {
-                    // Paint & Check: the typed value poses the check pose, which is never saved.
-                    bool posed = session.SetCheckChannelValue(controllers[^1], channel, value, out string checkReason);
-                    _status.Text = posed ? $"Posed {controllers[^1].Name} for Paint & Check (not saved)." : checkReason ?? "The value was not applied.";
-                    UpdateSelection(forceSpinner: true);
-                    return posed ? 1 : 0;
-                }
+                bool checkPose = InPaintAndCheck;
                 int frame = (int)MathF.Round(_time);
                 int written = 0;
                 RunKeyEdit(delegate
                 {
-                    written = session.SetChannelValue(_animation, controllers, frame, channel, value, out string reason);
+                    written = session.SetChannelValue(_animation, controllers, frame, channel, value, out string reason, checkPose);
                     if (written == 0)
                     {
                         _status.Text = reason ?? "The value was not applied.";

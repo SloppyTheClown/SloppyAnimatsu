@@ -181,8 +181,10 @@ The animation list in the **Bank** panel shows the character's animations, its f
 rows with their contents indented below, and the **(rest pose)** entry. The list's right-click menu
 creates an animation (one stack with a track per controller), copies,
 deletes and renames the shown one, and manages folders: **New folder**, **Rename folder…** and
-**Delete folder** (with everything inside). Dragging an animation or folder in the list drops it
-into the folder under the pointer; a folder never goes into itself.
+**Delete folder** (with everything inside). **Copy** on a folder row duplicates the folder beside
+it with every folder and animation inside (one undo step). Dragging an animation or folder in the list drops it
+into the folder under the pointer; a folder never goes into itself. Clicking a folder's icon opens
+or closes it; **Alt+click** opens or closes every folder inside it as well.
 
 The **Mixer** window has one row per stack (the eye turns it on or off, the bent arrow is
 a pose stack and the note an audio one, then the name and the opacity), and the six buttons along
@@ -271,10 +273,42 @@ reference-pose advice ("Reference poses of your characters must be similar...") 
 list; the profile's *Skip retargeting ref pose advice popup* hides it. The window matches by name
 only - an edited mapping is the command line's `--match`.
 
+### Shared Anim Banks
+
+Characters with the same skeleton can share one Anim Bank, so every animation plays on each of
+them. **Link banks…** (the Anim Bank's button bar) opens the *Link Anim Banks* window: pick the
+**reference character** and tick the characters to link with it. Each one says whether its
+skeleton matches the reference (the same controller names); one that does not can still be
+picked, and **Link** then asks before going ahead, because a shared animation only moves the
+controllers both characters have. The window also lists the animations that hold the same motion
+in more than one bank; the ticked ones are left out of the merged bank (the copy outside a
+*Retargeted From* folder is kept).
+
+Linking gives each other character the reference's joint rotations and scales in its reference
+pose (it keeps its own bone lengths, and its animations are converted so they keep their motion),
+merges the banks, and gives every linked character a full copy. From then on, any change in one
+linked bank - keys, new, renamed, moved or deleted animations and folders, undo and redo - is
+copied to the others. In both Rigging and Animation, a small chain mark beside the characters in
+the Scene panel shows which ones share the current character's bank. Linking is one undo step.
+The duplicate list has a **Select all** box above it.
+
+If you add, delete, rename or reparent joints or IK controllers on a linked character in Rigging,
+going back to Animation asks whether to make the same changes on the characters it is linked
+with. Joints and controllers are matched by name; anything without a match is skipped and listed
+in the status bar. The copy is one undo step.
+
+**Unlink bank** takes the current character out of its group; it keeps its own copy of every
+animation. Changing the reference pose of a linked character warns that the bank is shared and
+offers to change the linked characters' reference poses the same way: every matched joint takes
+the new rotation, limbs included, and each IK controller and reverse foot moves along with its
+chain. The link is saved in
+`.slopa` files only; a scene saved as `.akt` simply has every animation on every character.
+
 The Scene panel is the hierarchy: one row per 3D object in file order, with a Show checkbox and,
 on a skinned mesh, a Lock checkbox; **Show all** and **Hide all** cover the scene. Clicking a row's
 name selects that controller, and dragging a row onto another row reparents it there, keeping its
-world (one undo step, Rigging context only, within one character). A hidden character hides its
+world (one undo step, Rigging context only, within one character). The `[+]`/`[-]` box opens one level;
+**Alt+click** on it expands or collapses the whole hierarchy below. A hidden character hides its
 joints and meshes. Each row carries a small picture and colour for its kind (character, joint,
 mesh, skinned or locked mesh, IK or reverse-foot controller, shoe locator, camera, blendshape), and
 a hidden row is dimmed. Right-clicking the panel offers **Show**, **Hide**, **Toggle shown**,
@@ -369,6 +403,34 @@ and animation the settings would export, and a line under the toggles counts the
 asks where to write; choosing the *Animation (.aknm)* type writes the exported animations as `.aknm`
 files instead (one per character). The window's choices are kept for next time. Imported FBX warnings (an unsupported layer, a missing joint) are printed to the
 console and counted in the status bar.
+
+### EZ Exports (export presets)
+
+**Plugins > EZ Exports > Open window** keeps named export presets in the scene, so a set of files can
+be written again with one click after every change. A preset holds:
+
+- **Items** - characters and the animations and Anim Bank folders that belong to them, listed under
+  their character. A character row marked *(model)* writes that character's model without animations
+  (select the character, or one of its joints or meshes, in the TREE and press **Add selected
+  character**; with nothing selected there it adds the Anim Bank's character); an animation or folder writes each animation under it, sub-folders included
+  (select rows in the Anim Bank and press **Add selected from Anim Bank**). With **No animations** on
+  in the export settings, animation items stand for their character's model instead. Items follow
+  renames and moves; one that was deleted shows as *(missing)* and is skipped. **Remove** on a
+  character row removes it and everything listed under it.
+- **Destination** - where the files go. A relative folder (`exports`, `../fbx`) is relative to the
+  scene file, so the scene must be saved first; empty means the scene's own folder.
+- **Filename** - `<Filename>.fbx` when the preset writes one file, `<Filename>_<Character>.fbx` /
+  `<Filename>_<Animation>.fbx` for several (the preset's name when it is empty). Existing files are
+  overwritten.
+- **Export settings** - **Edit…** opens the Export Settings window without its scope and file-splitting
+  rows; each animation is exported with the character it belongs to.
+
+The **Will write** list shows the files a preset would write. **Run this preset**, **Run checked** and
+**Run all** (also **Plugins > EZ Exports > Run all presets**) write them; the status bar says how
+many files were written and how many items were skipped. Preset edits mark the scene as changed but
+are not undo steps. Drag a preset in the list to reorder it. Presets are saved in `.slopa` scenes only; saving as `.akt` leaves them out.
+Every plugin can be turned off from its **Enabled** box or **Plugins > Manage plugins…**; what it
+stored in a scene stays there. `ezexport` in [cli.md](cli.md) lists, adds and runs presets.
 
 Retargeting one character's animations onto another is **Retarget animations…** in the Anim Bank's
 right-click menu (or `retarget` in [cli.md](cli.md)); so is

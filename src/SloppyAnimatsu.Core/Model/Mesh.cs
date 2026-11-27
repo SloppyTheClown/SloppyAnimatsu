@@ -120,6 +120,14 @@ public sealed class Mesh : Object3D
     /// <summary>The pose the mesh was bound in.</summary>
     public CharacterPose? BindPose => Ref<CharacterPose>("BindPose");
 
+    /// <summary>
+    /// The character the mesh is skinned to: its bind pose's character while <see cref="Skinned"/> is
+    /// set, else null. Unbinding (Unbind Skin, or moving the mesh out of its character) clears
+    /// <c>Skinned</c> but keeps the bind pose reference and the weights so a later Bind Skin can carry
+    /// them across, so the reference alone does not make the mesh part of that character.
+    /// </summary>
+    public Character? BoundCharacter => Skinned ? BindPose?.Character : null;
+
     /// <summary>Target shapes of the mesh, in influence-array order.</summary>
     public IReadOnlyList<Blendshape> BlendshapeTargets => Refs<Blendshape>("BlendshapeTargetArray");
 

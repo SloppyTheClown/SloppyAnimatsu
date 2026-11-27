@@ -95,6 +95,18 @@ public static class AkeytsuCompatibility
         MaterialSchema.CompensateValuesMember,
         MaterialSchema.AddedOrderMember,
         MaterialSchema.ViewFlatMember,
+        MaterialSchema.PluginIdsMember,
+        MaterialSchema.PluginDataMember,
+        MaterialSchema.PluginRefsMember,
+        MaterialSchema.PluginRefOwnersMember,
+        MaterialSchema.SharedBankCharactersMember,
+        MaterialSchema.SharedBankGroupsMember,
+        MaterialSchema.SharedBankItemsMember,
+        MaterialSchema.SharedBankItemRowsMember,
+        MaterialSchema.CheckPoseTargetsMember,
+        MaterialSchema.CheckPoseValuesMember,
+        MaterialSchema.CheckPoseFeetMember,
+        MaterialSchema.CheckPoseFootAnglesMember,
     };
 
     /// <summary>What a reader is told is lost, one item per line.</summary>
@@ -107,8 +119,11 @@ public static class AkeytsuCompatibility
         "Compensate Scale keys in animations",
         "the Anim Bank's Added order (when each animation was added)",
         "whether the main view was flat (the view itself is kept)",
+        "plugin data, e.g. EZ Exports presets",
+        "shared Anim Bank links between characters (each keeps its own copy of the bank)",
         "compression (the file is several times larger)",
         "the old weights of a mesh moved into another character and not bound there yet (Bind Skin solves new ones)",
+        "which objects inside a hidden character or group are shown (they are saved hidden, so showing the parent alone no longer shows them)",
     ];
 
     /// <summary>The weight arrays <see cref="EmptiedFields"/> may empty.</summary>
@@ -138,6 +153,37 @@ public static class AkeytsuCompatibility
                 emptied[obj] = WeightArrays;
         }
         return emptied;
+    }
+
+    /// <summary>
+    /// The member values a plain .akt save writes differently, per object: the shown bit
+    /// (<c>Flags</c> bit 0) of every 3D object under a hidden 3D ancestor is written clear. SloppyAnimatsu
+    /// hides a character or folder by its own bit and draws what is under it only while every
+    /// ancestor is shown, so a child keeps its own state across the parent's hide and show; a
+    /// reader that draws each object by its own bit alone would otherwise show the hidden
+    /// character's meshes and joints. The document itself keeps the children's own bits.
+    /// </summary>
+    public static IReadOnlyDictionary<AktObject, IReadOnlyDictionary<string, object?>> ReplacedFields(AktDocument doc)
+    {
+        var replaced = new Dictionary<AktObject, IReadOnlyDictionary<string, object?>>(ReferenceEqualityComparer.Instance);
+        foreach (var root in doc.Roots)
+            HideUnderHidden(doc, root, ancestorHidden: false, replaced);
+        return replaced;
+    }
+
+    private static void HideUnderHidden(AktDocument doc, AktObject obj, bool ancestorHidden,
+        Dictionary<AktObject, IReadOnlyDictionary<string, object?>> replaced)
+    {
+        bool is3D = IsA(doc, obj, "CObject3D");
+        object? flags = is3D ? obj["Flags"] : null;
+        bool shown = flags switch { uint u => (u & 1) != 0, int i => (i & 1) != 0, _ => true };
+        // Only a stored flag word is rewritten; an object without one keeps whatever the writer emits.
+        object? cleared = flags switch { uint u => u & ~1u, int i => i & ~1, _ => null };
+        if (ancestorHidden && shown && cleared != null)
+            replaced[obj] = new Dictionary<string, object?>(StringComparer.Ordinal) { ["Flags"] = cleared };
+        bool hiddenBelow = ancestorHidden || (is3D && !shown);
+        foreach (var child in obj.Children)
+            HideUnderHidden(doc, child, hiddenBelow, replaced);
     }
 
     private static bool IsA(AktDocument doc, AktObject obj, string classKey) =>

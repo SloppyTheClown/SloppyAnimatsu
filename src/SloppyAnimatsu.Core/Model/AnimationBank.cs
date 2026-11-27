@@ -356,6 +356,28 @@ public sealed class AnimationBankEditor
         return (Folder)Character.Model.Wrap(source);
     }
 
+    /// <summary>
+    /// Deep-copies <paramref name="folder"/> - every folder and animation inside it - beside the
+    /// original (name uniquified). The copied animations count as new for the Added sort.
+    /// </summary>
+    public Folder CopyFolder(Folder folder)
+    {
+        if (!IsUserFolder(folder)) throw new InvalidOperationException($"{folder.Name} is not a folder of the Anim Bank.");
+        var parent = folder.Source.Parent ?? throw new InvalidOperationException($"{folder.Name} has no parent.");
+        var copy = folder.Source.CloneHierarchy();
+        copy.Set("Name", UniqueNames.For(parent, folder.Name ?? "New folder"));
+        var pending = new Stack<AktObject>([copy]);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            if (node.Has(MaterialSchema.AddedOrderMember)) node.Set(MaterialSchema.AddedOrderMember, 0);
+            foreach (var child in node.Children) pending.Push(child);
+        }
+        parent.AddChild(copy);
+        Evaluator.Invalidate();
+        return (Folder)Character.Model.Wrap(copy);
+    }
+
     /// <summary>Removes <paramref name="folder"/> with every folder and animation inside it; the current animation becomes none if it was inside.</summary>
     public void DeleteFolder(Folder folder)
     {

@@ -5,7 +5,7 @@
     it; bump it here before running packaging\package.ps1 or packaging\package.sh.
   -->
   <PropertyGroup>
-    <Version>0.4.2-alpha</Version>
+    <Version>0.4.3-alpha</Version>
     <Product>Sloppy Animatsu</Product>
     <Description>Rigs, skins, animates and exports .akt scenes</Description>
     <Company>SloppyAnimatsu</Company>

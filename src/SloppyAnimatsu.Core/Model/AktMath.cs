@@ -56,6 +56,24 @@ public readonly record struct Transform(Vector3 Translation, Quaternion Rotation
     public Matrix4x4 ToMatrix() =>
         Matrix4x4.CreateScale(Scale) * Matrix4x4.CreateFromQuaternion(Rotation) * Matrix4x4.CreateTranslation(Translation);
 
+    /// <summary>
+    /// How far a decomposed scale axis may sit from ±1 and still be float round-off of a unit
+    /// row: the length of a rotation matrix's row computed in floats lands a few ulps off 1
+    /// (1.0000001, 0.99999994), and a local re-derived from two world matrices a few more
+    /// (7.7e-7 seen on an evaluated IK chain). About sixteen ulps above 1; drift in the data
+    /// itself is larger and is removed by Normalize Scale instead.
+    /// </summary>
+    public const float ScaleRoundOff = 2e-6f;
+
+    /// <summary>
+    /// Each axis within <see cref="ScaleRoundOff"/> of ±1 becomes exactly ±1. Applied only to
+    /// scale values written out (FBX); the scene's own matrices and decompositions stay untouched,
+    /// so world positions computed from them do not move.
+    /// </summary>
+    public static Vector3 SnapUnitScale(Vector3 s) => new(SnapUnit(s.X), SnapUnit(s.Y), SnapUnit(s.Z));
+
+    private static float SnapUnit(float v) => MathF.Abs(MathF.Abs(v) - 1f) <= ScaleRoundOff ? MathF.CopySign(1f, v) : v;
+
     /// <summary>Splits a matrix into TRS; returns false when it has shear or a negative determinant.</summary>
     public static bool TryFromMatrix(Matrix4x4 m, out Transform transform)
     {

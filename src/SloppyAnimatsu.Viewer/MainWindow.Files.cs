@@ -384,7 +384,7 @@ public sealed partial class MainWindow
         // Showing a document is not an edit: whatever the set-up below marks, it ends as it came.
         bool documentDirty = document.Dirty;
         _dirty = documentDirty;
-        _history = state.History;
+        AttachHistory(state.History);
         _sessions = state.Sessions;
         _selectedAll = state.Selected;
         _fileLabel.Text = document.Name;
@@ -401,6 +401,7 @@ public sealed partial class MainWindow
         _focusedView = 0;
         LoadViews();
         RefreshMenu();
+        PluginsSceneChanged();
         MemoryLog.Step("views and menu");
         _outliner.Build(document.Model.Scene);
         MemoryLog.Step("outliner");

@@ -29,6 +29,7 @@ public class MultiSelectionEditingTests
         var drag = Assert.IsType<GroupDrag>(session.Begin(animation, [other, lead], frame, out var reason));
         Assert.Null(reason);
         Assert.Same(lead, drag.Controller);
+        drag.AkeytsuParity = true;
         drag.Rotate(2, 0.6f);
         drag.Commit();
 
@@ -67,7 +68,8 @@ public class MultiSelectionEditingTests
             var start = Worlds(session, animation, frame);
 
             Object3D[] selection = parentLeads ? [pair.Child, pair.Parent] : [pair.Parent, pair.Child];
-            var drag = session.Begin(animation, selection, frame, out _)!;
+            var drag = Assert.IsType<GroupDrag>(session.Begin(animation, selection, frame, out _));
+            drag.AkeytsuParity = true;
             drag.Rotate(0, 0.5f);
             var posed = drag.Posed;
 

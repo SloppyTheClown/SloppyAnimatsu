@@ -12,6 +12,22 @@ public enum InterfaceContext : byte
     Animation = 1,
 }
 
+/// <summary>How a viewport click combines with the selection: plain, Ctrl, add-only, or Alt.</summary>
+public enum PickCombine
+{
+    /// <summary>No modifier: the click's objects become the selection.</summary>
+    Replace,
+
+    /// <summary>Ctrl: added, or removed when they were already selected.</summary>
+    Toggle,
+
+    /// <summary>Added, never removed.</summary>
+    Add,
+
+    /// <summary>Alt: removed from the selection.</summary>
+    Remove,
+}
+
 /// <summary>One row of the hierarchy panel: a 3D object and its indentation depth.</summary>
 public readonly record struct OutlinerRow(Object3D Object, int Depth);
 
@@ -229,6 +245,39 @@ public static class Outliner
             if (selection.Remove(o)) removed++;
         }
         return -removed;
+    }
+
+    /// <summary>
+    /// A viewport hierarchy click: a right click takes <paramref name="root"/> and everything below
+    /// it (<paramref name="includeRoot"/> true), a middle click only what is below it. With no
+    /// modifier the result replaces the selection; Ctrl (<see cref="PickCombine.Toggle"/>) adds the
+    /// members, or removes them when they were all selected already; <see cref="PickCombine.Add"/>
+    /// only adds; Alt (<see cref="PickCombine.Remove"/>) removes them. The member the gizmo should sit
+    /// on - the root for a right click, the first object below it for a middle click - is moved to the
+    /// end of the selection, where the viewer reads its current object. Returns the members picked
+    /// (after <paramref name="filter"/>), in tree order.
+    /// </summary>
+    public static IReadOnlyList<Object3D> PickHierarchy(IList<Object3D> selection, Object3D root, bool includeRoot,
+        PickCombine combine, Func<Object3D, bool>? filter = null)
+    {
+        var members = Subtree(root)
+            .Where(o => (includeRoot || !ReferenceEquals(o, root)) && (filter == null || filter(o)))
+            .ToList();
+        if (members.Count == 0) return members;
+        bool remove = combine == PickCombine.Remove
+            || (combine == PickCombine.Toggle && members.All(selection.Contains));
+        if (remove)
+        {
+            foreach (var o in members) selection.Remove(o);
+            return members;
+        }
+        if (combine == PickCombine.Replace) selection.Clear();
+        foreach (var o in members)
+            if (!selection.Contains(o)) selection.Add(o);
+        var lead = members[0];
+        selection.Remove(lead);
+        selection.Add(lead);
+        return members;
     }
 
     /// <summary>

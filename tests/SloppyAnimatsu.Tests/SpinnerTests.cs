@@ -170,6 +170,7 @@ public class SpinnerTests
         int oi = session.Evaluator.IndexOf(other), li = session.Evaluator.IndexOf(lead);
         var start = session.Evaluator.WorldMatrices(animation, frame);
         var drag = Assert.IsType<GroupDrag>(session.Begin(animation, [other, lead], frame, out _));
+        drag.AkeytsuParity = true;
         var baseRotation = drag.Lead.BaseLocal.Rotation;
 
         drag.Rotate(2, 0.7f);

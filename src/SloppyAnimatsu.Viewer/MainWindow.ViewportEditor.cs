@@ -84,11 +84,69 @@ public sealed partial class MainWindow
             }
             // A click on the skinned mesh picks the joint with the most weight on the nearest vertex.
             object3D ??= JointUnder(at);
+            if (ClickCombine() == PickCombine.Remove)
+            {
+                // Alt+click takes the object out of the selection; a miss changes nothing.
+                if (object3D != null && _selectedAll.Remove(object3D))
+                {
+                    SyncSelection(_selected);
+                }
+                return;
+            }
             if (object3D != null || !toggle)
             {
                 Select(object3D, toggle);
             }
         }
+    }
+
+    /// <summary>How the last viewport click combines with the selection: Alt removes, Ctrl toggles.</summary>
+    private PickCombine ClickCombine()
+    {
+        KeyModifiers modifiers = _viewport.PressModifiers;
+        if ((modifiers & KeyModifiers.Alt) != 0) return PickCombine.Remove;
+        if ((modifiers & KeyModifiers.Control) != 0) return PickCombine.Toggle;
+        return PickCombine.Replace;
+    }
+
+    /// <summary>
+    /// A middle or right click on a joint (or any pickable controller): selects what is below it in
+    /// the hierarchy, and with <paramref name="includeRoot"/> (the right click) the clicked object
+    /// too. Ctrl adds (or removes an already selected hierarchy), Alt removes. False when nothing
+    /// pickable is under the pointer.
+    /// </summary>
+    private bool PickHierarchyAt(Vector2 at, bool includeRoot)
+    {
+        if (_pose?.Character is not { } character)
+        {
+            return false;
+        }
+        PoseEvaluator evaluator = _pose.Evaluator(character);
+        Object3D? root = ViewportPick.At(_viewport.Renderer.ActiveView, _viewport.EditSize, character, evaluator,
+            _pose.ControllerWorlds, at, PickTolerance(), ViewportPickable) ?? JointUnder(at);
+        if (root == null)
+        {
+            return false;
+        }
+        PickCombine combine = ClickCombine();
+        var members = Outliner.PickHierarchy(_selectedAll, root, includeRoot, combine,
+            o => evaluator.IndexOf(o) >= 0 && ViewportPickable(o));
+        SyncSelection(_selected);
+        string what = includeRoot ? $"'{root.Name}' and its hierarchy" : $"the hierarchy below '{root.Name}'";
+        _status.Text = members.Count == 0
+            ? $"'{root.Name}' has nothing below it to select."
+            : $"{(combine == PickCombine.Remove || (combine == PickCombine.Toggle && !members.Any(_selectedAll.Contains)) ? "Deselected" : "Selected")} {what}: {members.Count} object(s).";
+        return true;
+    }
+
+    /// <summary>A middle click on a joint selects everything below it in the hierarchy, not the joint itself.</summary>
+    void IViewportEditor.MiddleClick(Vector2 at)
+    {
+        if (_autoRigger != null || _placement != null)
+        {
+            return;
+        }
+        PickHierarchyAt(at, includeRoot: false);
     }
 
     /// <summary>
@@ -191,6 +249,16 @@ public sealed partial class MainWindow
     /// </summary>
     void IViewportEditor.RightClick(Vector2 at)
     {
+        if (_pose?.Character is { } pickCharacter && _autoRigger == null && _placement == null)
+        {
+            // A right click on a joint (anything without an IK lock) selects it and its hierarchy.
+            Object3D? under = ViewportPick.At(_viewport.Renderer.ActiveView, _viewport.EditSize, pickCharacter,
+                _pose.Evaluator(pickCharacter), _pose.ControllerWorlds, at, PickTolerance(), ViewportPickable);
+            if (under is not (CameraAnimated or CameraTarget or ControllerIK) && PickHierarchyAt(at, includeRoot: true))
+            {
+                return;
+            }
+        }
         AnimStack? stack = _timeline.ActiveStack;
         if (_pose?.Character != null && stack == null)
         {
@@ -294,24 +362,17 @@ public sealed partial class MainWindow
                         // Scaling an object that is not a controller is a rig change: Rigging only.
                         transformDrag = session.BeginPlacement(_selected!, allowScale: _animation == null);
                     }
-                    else if (InPaintAndCheck)
-                    {
-                        // Paint & Check poses the current object only, in a pose that is not saved.
-                        transformDrag = session.BeginCheckPose(controllers[^1], out reason);
-                    }
-                    else if (_animation == null && BankRowRefusesRestEdit(out string bankReason))
+                    else if (!InPaintAndCheck && _animation == null && BankRowRefusesRestEdit(out string bankReason))
                     {
                         _status.Text = bankReason;
                         return false;
                     }
-                    else if (_animation == null)
-                    {
-                        transformDrag = session.BeginRestPose(controllers, out reason);
-                    }
                     else
                     {
-                        SetTime(num);
-                        transformDrag = session.Begin(_animation, controllers, num, out reason);
+                        // One entry point for every pose layer: Paint & Check's runtime pose, the
+                        // rest pose, or the animation's keys at the playhead.
+                        if (_animation != null && !InPaintAndCheck) SetTime(num);
+                        transformDrag = session.BeginPose(_animation, controllers, num, InPaintAndCheck, out reason);
                     }
                     if (transformDrag == null)
                     {
@@ -363,6 +424,10 @@ public sealed partial class MainWindow
                     if (lead is EditDrag editDrag3)
                     {
                         text = $"{(editDrag3.CreatedKey ? "Keying" : "Editing")} {groupDrag.Members.Count} controllers at frame {num}.";
+                    }
+                    else if (lead is CheckPoseDrag)
+                    {
+                        text = $"Posing {groupDrag.Members.Count} controllers for Paint & Check.";
                     }
                     else
                     {
@@ -434,7 +499,7 @@ public sealed partial class MainWindow
             {
                 _status.Text = drag.Commit().Description;
                 // A Paint & Check pose is never saved, so it leaves the document clean.
-                if (drag is not CheckPoseDrag) _dirty = true;
+                if (drag is not (CheckPoseDrag or GroupDrag { Lead: CheckPoseDrag })) _dirty = true;
             }
             else
             {

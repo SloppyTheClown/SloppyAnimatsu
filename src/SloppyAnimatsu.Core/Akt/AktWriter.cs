@@ -21,10 +21,13 @@ public sealed class AktWriter
 
     private readonly IReadOnlySet<string>? _omit;
     private readonly IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? _emptied;
+    private readonly IReadOnlyDictionary<AktObject, IReadOnlyDictionary<string, object?>>? _replaced;
 
     private AktWriter(AktDocument doc, IProgress<double>? progress, IReadOnlySet<string>? omit,
-        IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? emptied = null)
+        IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? emptied = null,
+        IReadOnlyDictionary<AktObject, IReadOnlyDictionary<string, object?>>? replaced = null)
     {
+        _replaced = replaced is { Count: > 0 } ? replaced : null;
         _doc = doc;
         _progress = progress;
         _omit = omit is { Count: > 0 } ? omit : null;
@@ -39,11 +42,13 @@ public sealed class AktWriter
     /// left out of the class schema and of every object, as if the schema never had them (the
     /// .akt-compatible save drops SloppyAnimatsu's own members this way; <see cref="AkeytsuCompatibility"/>).
     /// The vector members listed for an object in <paramref name="emptiedVectors"/> are written with
-    /// no elements; the document itself is not changed.
+    /// no elements, and the members listed for an object in <paramref name="replacedValues"/> are
+    /// written with the listed value; the document itself is not changed.
     /// </summary>
     public static byte[] Write(AktDocument doc, IReadOnlySet<string>? omitMembers, IProgress<double>? progress = null,
-        IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? emptiedVectors = null) =>
-        new AktWriter(doc, progress, omitMembers, emptiedVectors).WriteDocument();
+        IReadOnlyDictionary<AktObject, IReadOnlySet<string>>? emptiedVectors = null,
+        IReadOnlyDictionary<AktObject, IReadOnlyDictionary<string, object?>>? replacedValues = null) =>
+        new AktWriter(doc, progress, omitMembers, emptiedVectors, replacedValues).WriteDocument();
 
     private bool Omitted(string name) => _omit != null && _omit.Contains(name);
 
@@ -94,6 +99,8 @@ public sealed class AktWriter
         int cursor = 0;
         IReadOnlySet<string>? emptied = null;
         _emptied?.TryGetValue(obj, out emptied);
+        IReadOnlyDictionary<string, object?>? replaced = null;
+        _replaced?.TryGetValue(obj, out replaced);
         foreach (var c in def.Chain())
             foreach (var m in c.Members)
             {
@@ -108,6 +115,7 @@ public sealed class AktWriter
                     b.U32(0); // a vector with no elements: just its count
                     continue;
                 }
+                if (replaced != null && replaced.TryGetValue(m.Name, out var replacement)) value = replacement;
                 WriteValue(b, m.Type, value);
             }
         if (_progress != null && (++_written & 1023) == 0)

@@ -89,6 +89,10 @@ public sealed partial class MainWindow
         panel.Children.Add(_matBody);
         ToolTip.SetTip(_matKey, "Key the selected texture at the current frame of the current animation");
         ToolTip.SetTip(_matUnkey, "Delete this material's texture key at the current frame");
+        PanelIcons.Apply(_matAdd, "Add texture…", PanelIcons.AddTexture(), 14.0);
+        PanelIcons.Apply(_matRemove, "Remove texture", PanelIcons.RemoveTexture(), 14.0);
+        PanelIcons.Apply(_matKey, "Key", PanelIcons.CreateKey(), 14.0);
+        PanelIcons.Apply(_matUnkey, "Delete key", PanelIcons.DeleteKey(), 14.0);
         ToolTip.SetTip(_matTransparent, "Draw the texture's alpha (cut-outs, the collar); off draws it opaque");
         ToolTip.SetTip(_matNearest, "Sample the nearest texel (Blender's Closest), for pixel-art textures");
 

@@ -37,10 +37,10 @@ public sealed partial class MainWindow
             .Where(o => o is Character or Mesh || o.GetType() == typeof(Object3D)).ToList();
         if (!SceneRescale.SceneNeedsNormalizing(_pose.Model))
         {
-            _status.Text = "Nothing to normalize: every character, mesh and group already has a scale of 1.";
+            _status.Text = "Nothing to normalize: every character, mesh, group, joint and controller already has a scale of 1.";
             return;
         }
-        if (!await ConfirmNormalizeScale(scaled)) return;
+        if (!await ConfirmNormalizeScale(scaled, SceneRescale.ControllerScaleDrift(_pose.Model))) return;
 
         var before = EditSnapshot.TakeScene(_character, scene);
         SceneRescale rescale;
@@ -62,7 +62,13 @@ public sealed partial class MainWindow
         string skipped = rescale.SkippedNonUniform.Count > 0
             ? $" Skipped {rescale.SkippedNonUniform.Count} object(s) with a non-uniform scale: {string.Join(", ", rescale.SkippedNonUniform.Take(4).Select(o => o.Name))}."
             : "";
-        _status.Text = $"Normalized the scale of {rescale.Normalized.Count} object(s): {string.Join(", ", rescale.Normalized.Take(4).Select(o => o.Name))}.{skipped}";
+        string objects = rescale.Normalized.Count > 0
+            ? $"Normalized the scale of {rescale.Normalized.Count} object(s): {string.Join(", ", rescale.Normalized.Take(4).Select(o => o.Name))}."
+            : "No object scale to normalize.";
+        string drift = rescale.CleanedControllerScales > 0
+            ? $" Set {rescale.CleanedControllerScales} near-1 joint/controller scale(s) to exactly 1."
+            : "";
+        _status.Text = objects + drift + skipped;
     }
 
     /// <summary>The undo descriptions of Normalize translation / rotation (undo and redo reload geometry for them).</summary>
@@ -150,18 +156,28 @@ public sealed partial class MainWindow
         UpdateSelection(forceSpinner: true);
     }
 
-    private Task<bool> ConfirmNormalizeScale(IReadOnlyList<Object3D> scaled)
+    private Task<bool> ConfirmNormalizeScale(IReadOnlyList<Object3D> scaled, int drift)
     {
-        string list = string.Join("\n", scaled.Take(8).Select(o =>
+        string text = "";
+        if (scaled.Count > 0)
         {
-            var s = Object3D.LocalScale(o.LocalMatrix);
-            return $"  • {o.Name}: {(s.X + s.Y + s.Z) / 3f:0.###}x";
-        }));
-        if (scaled.Count > 8) list += $"\n  … and {scaled.Count - 8} more";
-        return ConfirmNormalize("Normalize scale",
-            "Set the scale of these objects to 1, keeping everything the same size?\n\n" + list +
-            "\n\nThe scale moves into the joint positions, the poses, the animation keys and the mesh vertices, " +
-            "so nothing moves on screen. Joint and controller scales are kept. Edit > Undo (Ctrl+Z) reverts it.");
+            string list = string.Join("\n", scaled.Take(8).Select(o =>
+            {
+                var s = Object3D.LocalScale(o.LocalMatrix);
+                return $"  • {o.Name}: {(s.X + s.Y + s.Z) / 3f:0.###}x";
+            }));
+            if (scaled.Count > 8) list += $"\n  … and {scaled.Count - 8} more";
+            text = "Set the scale of these objects to 1, keeping everything the same size?\n\n" + list +
+                "\n\nThe scale moves into the joint positions, the poses, the animation keys and the mesh vertices, " +
+                "so nothing moves on screen.";
+        }
+        if (drift > 0)
+            text += (text.Length > 0 ? "\n\n" : "") +
+                $"{drift} joint/controller matrices, poses or scale tracks sit a hair off 1 (like 1.00002). " +
+                "They will be set to exactly 1; scale animation further from 1 than 0.001 is kept.";
+        else
+            text += " Joint and controller scales are kept.";
+        return ConfirmNormalize("Normalize scale", text + " Edit > Undo (Ctrl+Z) reverts it.");
     }
 
     private async Task<bool> ConfirmNormalize(string title, string text)

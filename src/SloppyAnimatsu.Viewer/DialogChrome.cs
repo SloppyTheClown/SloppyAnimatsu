@@ -42,7 +42,15 @@ internal sealed class DialogChrome
     public void Bind(params (DialogStop Stop, Control Control)[] controls)
     {
         int values = controls.Count(control => control.Stop is DialogStop.PageValue or DialogStop.WelcomeTemplate);
-        var expected = DialogLayout.Stops(_dialog, values);
+        BindTo(DialogLayout.Stops(_dialog, values), controls);
+    }
+
+    /// <summary>
+    /// <see cref="Bind"/> against an order the caller takes from the model itself, for a dialog with
+    /// more than one shape (the Export Settings window an export preset opens).
+    /// </summary>
+    public void BindTo(IReadOnlyList<DialogStop> expected, params (DialogStop Stop, Control Control)[] controls)
+    {
         if (expected.Count != controls.Length)
             throw new InvalidOperationException(
                 $"{_dialog} binds {controls.Length} controls but DialogLayout describes {expected.Count}.");

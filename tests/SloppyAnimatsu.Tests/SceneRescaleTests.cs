@@ -79,6 +79,87 @@ public class SceneRescaleTests
         AssertClose(before, WorldPoints(model));
     }
 
+    /// <summary>Every joint/controller scale the evaluator gives, per character, animation and time.</summary>
+    private static List<(string Where, Vector3 Scale)> ControllerScales(SceneModel model)
+    {
+        var scales = new List<(string, Vector3)>();
+        foreach (var character in model.Scene.Descendants<Character>())
+        {
+            var evaluator = new PoseEvaluator(character);
+            foreach (var (rest, i) in evaluator.RestTransforms.Select((t, i) => (t, i)))
+                scales.Add(($"{character.Name} rest #{i}", rest.Scale));
+            foreach (var animation in character.Animations.Where(a => a.Stacks.Count > 0).Take(3))
+                foreach (float t in Times)
+                    foreach (var (local, i) in evaluator.LocalTransforms(animation, t).Select((l, i) => (l, i)))
+                        scales.Add(($"{character.Name} {animation.Name}@{t} #{i}", local.Scale));
+        }
+        return scales;
+    }
+
+    [Fact]
+    public void Normalize_SetsDriftedControllerScalesToExactlyOne_AndKeepsRealScales()
+    {
+        if (Sample() is not { } path) return;
+        var model = TestFiles.LoadScene(path);
+        var before = ControllerScales(model);
+
+        SceneRescale.Normalize(model);
+
+        Assert.Equal(0, SceneRescale.ControllerScaleDrift(model));
+        var after = ControllerScales(model);
+        Assert.Equal(before.Count, after.Count);
+        static float Off(Vector3 s) => MathF.Max(MathF.Abs(s.X - 1), MathF.Max(MathF.Abs(s.Y - 1), MathF.Abs(s.Z - 1)));
+        for (int i = 0; i < before.Count; i++)
+        {
+            var (where, was) = before[i];
+            var now = after[i].Scale;
+            if (Off(was) > SceneRescale.KeyDriftTolerance)
+                // A real scale moves at most by the drift removed from the keys it is interpolated from.
+                Assert.True(Vector3.Distance(was, now) <= SceneRescale.KeyDriftTolerance * 1.7321f + 1e-4f * was.Length(), $"{where}: real scale {was} became {now}");
+            else if (where.Contains(" rest "))
+                Assert.True(Off(now) <= Transform.ScaleRoundOff, $"{where}: rest scale {was} became {now:R}, not 1");
+            else
+                Assert.True(Off(now) <= Off(was) + 1e-6f, $"{where}: scale {was} drifted further to {now}");
+        }
+    }
+
+    /// <summary>Every scale float of a track's value keys, in order.</summary>
+    private static List<float> KeyScales(AnimTrack track)
+    {
+        var seen = new List<float>();
+        SceneRescale.MapScales(SceneValues.Items(track.Source, "KeyList"), v => { seen.Add(v); return v; });
+        return seen;
+    }
+
+    [Fact]
+    public void Normalize_CleansDriftedKeys_InTracksThatAlsoAnimateScale_AndKeepsNaN()
+    {
+        // A track holding drift (1.002, 0.9985), a real scale (1.5) and a NaN (a cached render
+        // copy) is cleaned value by value: drift becomes 1, the rest is kept as it was.
+        if (Sample() is not { } path) return;
+        var model = TestFiles.LoadScene(path);
+        var controllers = model.Scene.Descendants<Character>().SelectMany(c => c.Controllers).Select(c => c.Source).ToHashSet();
+        var track = model.Scene.Descendants<AnimTrack>()
+            .First(t => t.Target != null && controllers.Contains(t.Target.Source) && KeyScales(t).Count >= 6);
+        int n = 0;
+        float[] planted = [1.002f, 1.5f, float.NaN, 0.9985f];
+        var edited = SceneRescale.MapScales(SceneValues.Items(track.Source, "KeyList"), _ => n < planted.Length ? planted[n++] : 1.0005f);
+        track.Source.Set("KeyList", edited);
+        Assert.True(SceneRescale.ControllerScaleDrift(model) > 0);
+
+        SceneRescale.Normalize(model);
+
+        var after = KeyScales(track);
+        Assert.True(after.Count >= 4, "too few scale floats");
+        string got = $"{track.Target?.Name}: " + string.Join(" ", after.Take(8).Select(v => v.ToString("R")));
+        Assert.True(after[0] == 1f && after[1] == 1.5f && float.IsNaN(after[2]) && after[3] == 1f, got);
+        Assert.Equal(1f, after[0]);
+        Assert.Equal(1.5f, after[1]);
+        Assert.True(float.IsNaN(after[2]));
+        Assert.All(after.Skip(3), v => Assert.Equal(1f, v));
+        Assert.Equal(0, SceneRescale.ControllerScaleDrift(model));
+    }
+
     [Fact]
     public void Normalize_Undo_RestoresTheScene()
     {

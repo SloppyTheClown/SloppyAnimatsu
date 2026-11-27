@@ -129,6 +129,62 @@ public sealed class OutlinerView : UserControl
 
     private readonly Dictionary<CameraAnimated, Button> _cameraButtons = new(ReferenceEqualityComparer.Instance);
 
+    // The chain marks beside the characters that share the Anim Bank on show, by character object.
+    private readonly Dictionary<object, Control> _chainMarks = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<object> _linked = new(ReferenceEqualityComparer.Instance);
+    private string _linkedTip = "";
+
+    /// <summary>
+    /// Puts a chain mark beside <paramref name="characters"/> (the members of a shared Anim Bank) and
+    /// takes it off every other row; an empty list clears them. Kept across rebuilds.
+    /// </summary>
+    public void ShowSharedBank(IEnumerable<Character> characters, string tip)
+    {
+        _linked.Clear();
+        foreach (var c in characters) _linked.Add(c.Source);
+        _linkedTip = tip;
+        foreach (var (source, mark) in _chainMarks)
+        {
+            mark.IsVisible = _linked.Contains(source);
+            ToolTip.SetTip(mark, tip);
+        }
+    }
+
+    /// <summary>Two interlocked rounded links, tilted.</summary>
+    private static Control ChainMark()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0x9c, 0xc8, 0xf0));
+        Avalonia.Controls.Shapes.Rectangle Link(double left)
+        {
+            var link = new Avalonia.Controls.Shapes.Rectangle
+            {
+                Width = 9,
+                Height = 5,
+                RadiusX = 2.5,
+                RadiusY = 2.5,
+                Stroke = brush,
+                StrokeThickness = 1.4,
+            };
+            Canvas.SetLeft(link, left);
+            Canvas.SetTop(link, 3.5);
+            return link;
+        }
+        return new Viewbox
+        {
+            Width = 14,
+            Height = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new Canvas
+            {
+                Width = 16,
+                Height = 12,
+                Background = Brushes.Transparent,
+                RenderTransform = new RotateTransform(-35),
+                Children = { Link(0.5), Link(6.5) },
+            },
+        };
+    }
+
     /// <summary>Re-colours the camera buttons after a camera view opened or closed.</summary>
     public void RefreshCameraButtons()
     {
@@ -202,6 +258,11 @@ public sealed class OutlinerView : UserControl
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
         if (_editBox != null) return;
+        if (e.KeyModifiers == KeyModifiers.None && NavigateWithArrow(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
         switch (Keys.ActionFor(HotkeyScope.Outliner, ShortcutInput.FromKey(e.Key, e.KeyModifiers)))
         {
             case "SelectAllControllers":
@@ -220,6 +281,58 @@ public sealed class OutlinerView : UserControl
                 e.Handled = true;
                 break;
         }
+    }
+
+    /// <summary>
+    /// Arrow keys walk the shown rows from the current one: Up/Down to the previous/next shown row,
+    /// Right opens a closed row or steps to its first child, Left closes an open row or steps to its
+    /// parent. The reached row becomes the lone selection. False when the key is not an arrow or
+    /// there is no current row.
+    /// </summary>
+    private bool NavigateWithArrow(Key key)
+    {
+        if (key is not (Key.Up or Key.Down or Key.Left or Key.Right) || _selectedView == null) return false;
+        int selected = _tree.FindIndex(t => ReferenceEquals(t.View, _selectedView));
+        if (selected < 0) return false;
+        // A current row hidden under a closed ancestor walks from that ancestor.
+        int current = ShownRowOf(selected);
+        if (current < 0) return false;
+        var (_, gutter, parent) = _tree[current];
+        var o = _byView[_tree[current].View];
+        int next = -1;
+        switch (key)
+        {
+            case Key.Up:
+                for (int i = current - 1; i >= 0 && next < 0; i--) if (_tree[i].View.IsVisible) next = i;
+                break;
+            case Key.Down:
+                for (int i = current + 1; i < _tree.Count && next < 0; i++) if (_tree[i].View.IsVisible) next = i;
+                break;
+            case Key.Right when gutter.HasChildren && !gutter.Expanded:
+                SetExpanded(o, true);
+                return true;
+            case Key.Right when gutter.HasChildren:
+                // Pre-order rows: an open row's first child is the next row.
+                if (current + 1 < _tree.Count && _tree[current + 1].Parent == current) next = current + 1;
+                break;
+            case Key.Left when gutter.HasChildren && gutter.Expanded:
+                SetExpanded(o, false);
+                return true;
+            case Key.Left:
+                next = parent;
+                break;
+        }
+        if (next < 0) next = current;
+        if (next != selected) SelectRowFromKeyboard(next);
+        return true;
+    }
+
+    private void SelectRowFromKeyboard(int row)
+    {
+        var view = _tree[row].View;
+        ClickRow(view, KeyModifiers.None);
+        ObjectSelected?.Invoke(_byView[view], false);
+        view.BringIntoView();
     }
 
     /// <summary>Turns the current row's name into a text field (the menu's Rename, F2, or a click on the selected row).</summary>
@@ -302,6 +415,7 @@ public sealed class OutlinerView : UserControl
         _markedRow = null;
         _names.Clear();
         _cameraButtons.Clear();
+        _chainMarks.Clear();
         _tree.Clear();
         _selectedView = null;
         _selectedViews.Clear();
@@ -520,7 +634,7 @@ public sealed class OutlinerView : UserControl
 
     /// <summary>
     /// Shows or hides the children of <paramref name="o"/>: one level (theirs keep their own state),
-    /// or with <paramref name="deep"/> (Ctrl+click on the box) the whole hierarchy below it.
+    /// or with <paramref name="deep"/> (Alt+click on the box) the whole hierarchy below it.
     /// </summary>
     public void SetExpanded(Object3D o, bool expanded, bool deep = false)
     {
@@ -646,6 +760,15 @@ public sealed class OutlinerView : UserControl
             view.AddHandler(PointerPressedEvent, (_, e) => e.Handled = true, RoutingStrategies.Bubble);
             _cameraButtons[camera] = view;
             name.Children.Add(view);
+        }
+        // A character that shares the Anim Bank on show carries a chain mark (ShowSharedBank).
+        if (o is Character)
+        {
+            var chain = ChainMark();
+            chain.IsVisible = _linked.Contains(o.Source);
+            ToolTip.SetTip(chain, _linkedTip);
+            _chainMarks[o.Source] = chain;
+            name.Children.Add(chain);
         }
         var tree = new StackPanel
         {

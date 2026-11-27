@@ -1,4 +1,5 @@
 using System.Numerics;
+using SloppyAnimatsu.Core.Fbx;
 using SloppyAnimatsu.Core.Model;
 using Xunit;
 
@@ -155,6 +156,47 @@ public class OutlinerDragTests
     }
 
     [SceneTheory, SceneSamples]
+    public void HiddenCharacter_PlainAktSaveHidesEverythingInsideIt_AndLeavesTheSceneAlone(string path)
+    {
+        // A plain .akt reader draws every object by its own shown bit, so a save for it carries a
+        // hidden character's state down to its contents; the open scene and the container keep
+        // the children's own bits.
+        var model = TestFiles.LoadScene(path);
+        var doc = model.Document;
+        var schema = doc.Schema;
+        bool Is3D(SloppyAnimatsu.Core.Akt.AktObject o) => schema.FindClass(o.TypeName)?.IsA("CObject3D") == true;
+        var character = doc.AllObjects().First(o => schema.FindClass(o.TypeName)?.IsA("CCharacter") == true
+            && o.PreOrder().Skip(1).Any(c => Is3D(c) && c["Flags"] is uint f && (f & 1) != 0));
+        character.Set("Flags", (uint)character["Flags"]! & ~1u);
+
+        var inside = new HashSet<SloppyAnimatsu.Core.Akt.AktObject>(character.PreOrder(), ReferenceEqualityComparer.Instance);
+        var before = doc.AllObjects().Select(o => o["Flags"]).ToList();
+
+        var plain = SloppyAnimatsu.Core.Akt.AktReader.Read(doc.Write(SloppyAnimatsu.Core.Akt.AktFileFormat.Akeytsu));
+        var container = SloppyAnimatsu.Core.Akt.AktReader.Read(doc.Write(SloppyAnimatsu.Core.Akt.AktFileFormat.SloppyAnimatsu));
+
+        Assert.Equal(before, doc.AllObjects().Select(o => o["Flags"]).ToList());
+        Assert.Equal(before, container.AllObjects().Select(o => o["Flags"]).ToList());
+        var originals = doc.AllObjects().ToList();
+        var written = plain.AllObjects().ToList();
+        Assert.Equal(originals.Count, written.Count);
+        int hiddenByTheSave = 0;
+        for (int i = 0; i < originals.Count; i++)
+        {
+            if (originals[i]["Flags"] is not uint flags || !Is3D(originals[i])) continue;
+            uint saved = (uint)written[i]["Flags"]!;
+            if (inside.Contains(originals[i]))
+            {
+                Assert.Equal(0u, saved & 1);
+                Assert.Equal(flags & ~1u, saved);
+                if ((flags & 1) != 0) hiddenByTheSave++;
+            }
+            else Assert.Equal(flags, saved);
+        }
+        Assert.True(hiddenByTheSave > 0);
+    }
+
+    [SceneTheory, SceneSamples]
     public void MeshDrag_IntoANewCharacter_PlainAktSaveDropsTheOldWeightsAndTheContainerKeepsThem(string path)
     {
         var model = TestFiles.LoadScene(path);
@@ -188,6 +230,39 @@ public class OutlinerDragTests
         SkinEditor.MoveMesh(mesh, owner);
         var back = SloppyAnimatsu.Core.Akt.AktReader.Read(model.Document.Write(SloppyAnimatsu.Core.Akt.AktFileFormat.Akeytsu));
         Assert.Equal(before, Count(back.Objects()[model.Document.Objects().IndexOf(mesh.Source)], "SkinWeightArray"));
+    }
+
+    [SceneTheory, SceneSamples]
+    public void MeshDrag_OutOfItsCharacter_LeavesThatCharactersMeshesAndSelectionExport(string path)
+    {
+        // A skinned mesh moved into another (empty) character keeps its old bind pose reference for a
+        // later rebind, but it must no longer count as the old character's mesh: exporting only the
+        // old character once wrote the mesh, with its skin, and its new character as a group.
+        var model = TestFiles.LoadScene(path);
+        var scene = model.Scene;
+        var mesh = scene.Meshes.FirstOrDefault(m => m.Skinned && !m.SkinnedMeshIsLocked && OutlinerDrag.OwnerOf(m) != null);
+        if (mesh == null) return;
+        var owner = OutlinerDrag.OwnerOf(mesh)!;
+        var fresh = CharacterBank.CreateCharacter(model);
+        Assert.True(SkinEditor.MoveMesh(mesh, fresh));
+        Assert.Same(owner, mesh.BindPose?.Character);
+        Assert.Null(mesh.BoundCharacter);
+        Assert.DoesNotContain(mesh, owner.Meshes);
+
+        var settings = new FbxExportSettings { Scope = FbxExportScope.Selection, WithoutAnimations = true };
+        Object3D[] onlyOwner = [owner];
+        var options = settings.ToOptions(settings.Characters(model, onlyOwner), settings.LooseMeshes(onlyOwner), null, null, null);
+        var exported = FbxExporter.ExportedObjects(model, options);
+        Assert.Contains(owner, exported);
+        Assert.DoesNotContain(mesh, exported);
+        Assert.DoesNotContain(fresh, exported);
+
+        // Exporting the new character takes the mesh along, without a skin.
+        Object3D[] onlyFresh = [fresh];
+        options = settings.ToOptions(settings.Characters(model, onlyFresh), settings.LooseMeshes(onlyFresh), null, null, null);
+        exported = FbxExporter.ExportedObjects(model, options);
+        Assert.Contains(mesh, exported);
+        Assert.DoesNotContain(owner, exported);
     }
 
     private static void AssertNear(Matrix4x4 expected, Matrix4x4 actual)

@@ -36,8 +36,9 @@ public sealed class ExportSettingsDialog : Window
     private readonly Action<FbxExportSettings>? _changed;
     private readonly Func<FbxExportSettings, string>? _describe;
 
+
     private ExportSettingsDialog(FbxExportSettings initial, Action<FbxExportSettings>? changed,
-        Func<FbxExportSettings, string>? describe)
+        Func<FbxExportSettings, string>? describe, bool settingsOnly = false)
     {
         _settings = initial;
         _changed = changed;
@@ -93,7 +94,19 @@ public sealed class ExportSettingsDialog : Window
                 toggles.Children.Add(box);
         }
 
-        _scale = new TextBox { Width = 72, VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(4, 1) };
+        // Compact and centred: the theme's default 32 px minimum height made the box taller than the
+        // label beside it, with the number sitting at the top left.
+        _scale = new TextBox
+        {
+            Width = 56,
+            MinHeight = 0,
+            Height = 24,
+            Padding = new Thickness(2, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
         ToolTip.SetTip(_scale,
             "Multiplies the size of everything exported (positions, animation translations, mesh vertices); 1 keeps the scene's own size. The scene itself is not changed.");
         _scale.TextChanged += (_, _) =>
@@ -101,7 +114,9 @@ public sealed class ExportSettingsDialog : Window
             if (_syncing) return;
             bool valid = float.TryParse((_scale.Text ?? "").Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float factor)
                 && FbxExportSettings.IsValidScaleFactor(factor);
-            _scale.Foreground = valid ? null : WarningForeground;
+            // ClearValue, not null: a null Foreground brush draws the text invisibly.
+            if (valid) _scale.ClearValue(ForegroundProperty);
+            else _scale.Foreground = WarningForeground;
             if (valid && factor != _settings.ScaleFactor) Change(_settings with { ScaleFactor = factor });
         };
         _scale.LostFocus += (_, _) => { _syncing = true; _scale.Text = FormatScale(_settings.ScaleFactor); _scale.ClearValue(ForegroundProperty); _syncing = false; };
@@ -112,9 +127,11 @@ public sealed class ExportSettingsDialog : Window
             Children = { new TextBlock { Text = "Scale factor", VerticalAlignment = VerticalAlignment.Center }, _scale },
         };
 
-        var export = new Button { Content = "Export…" };
+        var export = new Button { Content = settingsOnly ? "OK" : "Export…" };
         var cancel = new Button { Content = "Cancel" };
-        ToolTip.SetTip(export, "Choose where to write the file(s) and export with these settings. The settings are kept for next time.");
+        ToolTip.SetTip(export, settingsOnly
+            ? "Keep these settings."
+            : "Choose where to write the file(s) and export with these settings. The settings are kept for next time.");
         ToolTip.SetTip(cancel, "Close without exporting. Changes made here are not kept.");
         export.Click += (_, _) => { _ok = true; Close(); };
         cancel.Click += (_, _) => Close();
@@ -136,6 +153,15 @@ public sealed class ExportSettingsDialog : Window
         };
         ToolTip.SetTip(_warnings, "Settings that the chosen target reads badly or that have no effect. Exporting still works.");
 
+        // A click on empty space (no control handled it) takes the focus out of the text boxes, so
+        // the scale factor commits and the box is deselected. The transparent background on the
+        // window makes the gaps between rows hit-testable.
+        Background ??= Brushes.Transparent;
+        PointerPressed += (_, e) =>
+        {
+            if (!e.Handled) FocusManager?.ClearFocus();
+        };
+
         Content = new StackPanel
         {
             Margin = new Thickness(16),
@@ -153,18 +179,28 @@ public sealed class ExportSettingsDialog : Window
             },
         };
 
+        if (settingsOnly)
+        {
+            Title = "Export Settings (preset)";
+            _scope.IsVisible = false;
+            legend.IsVisible = false;
+            for (int i = 0; i < _toggles.Count; i++)
+                if (FbxExportSettings.SettingsOnlyHiddenOptions.Contains(FbxExportSettings.Options[i].Label))
+                    _toggles[i].IsVisible = false;
+        }
+
         var stops = new List<(DialogStop, Control)>();
         stops.AddRange(_presets.Select(p => (DialogStop.ExportPreset, (Control)p.Button)));
-        stops.Add((DialogStop.ExportScope, _scope));
+        if (_scope.IsVisible) stops.Add((DialogStop.ExportScope, _scope));
         for (int i = 0; i < _toggles.Count; i++)
         {
-            stops.Add((DialogStop.ExportOption, _toggles[i]));
+            if (_toggles[i].IsVisible) stops.Add((DialogStop.ExportOption, _toggles[i]));
             if (i == FbxExportSettings.FolderPathOptionIndex) stops.Add((DialogStop.ExportSeparator, _separator));
         }
         stops.Add((DialogStop.ExportScale, _scale));
         stops.Add((DialogStop.ExportRun, export));
         stops.Add((DialogStop.ExportCancel, cancel));
-        new DialogChrome(this, DialogId.ExportSettings).Bind(stops.ToArray());
+        new DialogChrome(this, DialogId.ExportSettings).BindTo(DialogLayout.ExportSettingsStops(settingsOnly), stops.ToArray());
 
         Sync();
     }
@@ -188,6 +224,18 @@ public sealed class ExportSettingsDialog : Window
         shown?.Invoke(dialog);
         dialog.Show(owner);
         return done.Task;
+    }
+
+    /// <summary>
+    /// The settings alone, for a caller that decides itself what gets exported and where (an EZ
+    /// Exports preset): no scope, no file-splitting toggles, OK instead of Export…. Modal over
+    /// <paramref name="owner"/>; completes with the settings, or null when cancelled.
+    /// </summary>
+    public static async Task<FbxExportSettings?> AskSettingsOnly(Window owner, FbxExportSettings initial)
+    {
+        var dialog = new ExportSettingsDialog(initial, null, null, settingsOnly: true);
+        await dialog.ShowDialog(owner);
+        return dialog._ok ? dialog._settings : null;
     }
 
     /// <summary>Re-reports the current settings and rewrites the summary, for when what they

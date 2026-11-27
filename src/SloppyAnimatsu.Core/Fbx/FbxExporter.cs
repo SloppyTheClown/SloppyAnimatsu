@@ -223,10 +223,13 @@ public static class FbxExporter
             if (options.ExportCameraTargets)
                 foreach (var target in character.Descendants<CameraTarget>()) Add(target, "Null");
             foreach (var mesh in character.Meshes) Add(mesh, "Mesh");
+            // Unskinned meshes kept in the character's tree go with it (a prop parked under it).
+            foreach (var mesh in character.Descendants<Mesh>())
+                if (mesh.BoundCharacter == null) Add(mesh, "Mesh");
         }
         foreach (var mesh in model.Scene.Meshes)
         {
-            if (seen.Contains(mesh) || mesh.BindPose?.Character != null) continue;
+            if (seen.Contains(mesh) || mesh.BoundCharacter != null) continue;
             if (options.LooseMeshes?.Contains(mesh) ?? options.Characters == null) Add(mesh, "Mesh");
         }
         return result;
@@ -511,7 +514,7 @@ public static class FbxExporter
             var euler = EulerDegrees(local.Rotation);
             AddProperty(properties, PropertyTranslation, PropertyTranslation, animated.T, local.Translation, Vector3.Zero);
             AddProperty(properties, PropertyRotation, PropertyRotation, animated.R, euler, Vector3.Zero);
-            AddProperty(properties, PropertyScaling, PropertyScaling, animated.S, local.Scale, Vector3.One);
+            AddProperty(properties, PropertyScaling, PropertyScaling, animated.S, Transform.SnapUnitScale(local.Scale), Vector3.One);
         }
 
         /// <summary>
@@ -575,7 +578,8 @@ public static class FbxExporter
             long geometryId = AddGeometry(mesh);
             Connect(geometryId, modelId, null);
             AddMaterials(mesh, modelId);
-            if (mesh.BindPose is { } bindPose) AddSkin(mesh, bindPose, geometryId, modelId);
+            // An unbound mesh keeps its old bind pose reference; it is written without a skin.
+            if (mesh.Skinned && mesh.BindPose is { } bindPose) AddSkin(mesh, bindPose, geometryId, modelId);
         }
 
         private long AddGeometry(Mesh mesh)
@@ -994,7 +998,7 @@ public static class FbxExporter
                     rotations[j][frame] = continuous && frame > 0
                         ? ContinuousEuler(rotations[j][frame - 1], euler)
                         : euler;
-                    scales[j][frame] = value.Scale;
+                    scales[j][frame] = Transform.SnapUnitScale(value.Scale);
                 }
             }
 
@@ -1031,7 +1035,7 @@ public static class FbxExporter
                     var defaults = LocalTransform(joints[j].Joint);
                     AddFittedCurveNode(layerId, joints[j].Model, PropertyTranslation, translations[j], translationTolerance, defaults.Translation);
                     AddFittedCurveNode(layerId, joints[j].Model, PropertyRotation, rotations[j], rotationTolerance, EulerDegrees(defaults.Rotation));
-                    AddFittedCurveNode(layerId, joints[j].Model, PropertyScaling, scales[j], scaleTolerance, defaults.Scale);
+                    AddFittedCurveNode(layerId, joints[j].Model, PropertyScaling, scales[j], scaleTolerance, Transform.SnapUnitScale(defaults.Scale));
                 }
                 return stop;
             }
@@ -1043,7 +1047,7 @@ public static class FbxExporter
                 var defaults = LocalTransform(joints[j].Joint);
                 AddCurveNode(layerId, joints[j].Model, PropertyTranslation, keyTimes, frameNumbers, translations[j], 0, null, null, defaults.Translation);
                 AddCurveNode(layerId, joints[j].Model, PropertyRotation, keyTimes, frameNumbers, rotations[j], 3, null, null, EulerDegrees(defaults.Rotation));
-                AddCurveNode(layerId, joints[j].Model, PropertyScaling, keyTimes, frameNumbers, scales[j], 6, null, null, defaults.Scale);
+                AddCurveNode(layerId, joints[j].Model, PropertyScaling, keyTimes, frameNumbers, scales[j], 6, null, null, Transform.SnapUnitScale(defaults.Scale));
             }
             return stop;
         }
@@ -1097,13 +1101,13 @@ public static class FbxExporter
                         // ~360 degrees across the +-180 wrap and spin the joint between the keys.
                         var euler = EulerDegrees(value.Rotation);
                         rotations[k] = k > 0 ? ContinuousEuler(rotations[k - 1], euler) : euler;
-                        scales[k] = value.Scale;
+                        scales[k] = Transform.SnapUnitScale(value.Scale);
                     }
                     var frames = times.Select(Ticks).ToArray();
                     var defaults = stack.IsAdditive ? Transform.Identity : LocalTransform(joint);
                     AddCurveNode(layerId, modelId, PropertyTranslation, frames, times, translations, 0, keys, track.TangentModes, defaults.Translation);
                     AddCurveNode(layerId, modelId, PropertyRotation, frames, times, rotations, 3, keys, track.TangentModes, EulerDegrees(defaults.Rotation));
-                    AddCurveNode(layerId, modelId, PropertyScaling, frames, times, scales, 6, keys, track.TangentModes, defaults.Scale);
+                    AddCurveNode(layerId, modelId, PropertyScaling, frames, times, scales, 6, keys, track.TangentModes, Transform.SnapUnitScale(defaults.Scale));
                 }
             }
             return last;
@@ -1336,6 +1340,17 @@ public static class FbxExporter
                         var guess = locals[index] with { Rotation = Quaternion.Concatenate(locals[index].Rotation, parentRotation) };
                         world0 = DecomposeLoose(world0, guess, minScale).ToMatrix();
                     }
+                    else if (Reproduces(locals[index].ToMatrix() * parentWorld, world0))
+                    {
+                        // The scene's own local already lands where the app puts the joint (the
+                        // usual case: no scale compensation or non-uniform ancestor to undo). Keep
+                        // it, so a scale of exactly 1 is not turned into 1.000002 by re-deriving
+                        // it from float world matrices.
+                        local = locals[index];
+                        var kept = local.ToMatrix() * parentWorld;
+                        rebuilt[o] = kept;
+                        return kept;
+                    }
                     local = DecomposeLoose(world0 * inverse, locals[index], minScale);
                     result[index] = local;
                 }
@@ -1366,6 +1381,26 @@ public static class FbxExporter
                 IsFinite(value.Translation) ? value.Translation : rest.Translation,
                 rotationOk ? Quaternion.Normalize(q) : rest.Rotation,
                 IsFinite(value.Scale) ? value.Scale : rest.Scale);
+        }
+
+        /// <summary>
+        /// Whether <paramref name="candidate"/> equals <paramref name="world"/> up to float
+        /// round-off of composing a chain: each 3x3 entry within 1e-5 of the row's length,
+        /// the translation within 1e-5 of its own size (and at least 1e-5 units).
+        /// </summary>
+        private static bool Reproduces(Matrix4x4 candidate, Matrix4x4 world)
+        {
+            const float Relative = 1e-5f;
+            static bool Close(Vector3 a, Vector3 b, float tolerance) =>
+                MathF.Abs(a.X - b.X) <= tolerance && MathF.Abs(a.Y - b.Y) <= tolerance && MathF.Abs(a.Z - b.Z) <= tolerance;
+            var w0 = new Vector3(world.M11, world.M12, world.M13);
+            var w1 = new Vector3(world.M21, world.M22, world.M23);
+            var w2 = new Vector3(world.M31, world.M32, world.M33);
+            if (!IsFinite(candidate) || !IsFinite(world)) return false;
+            return Close(new Vector3(candidate.M11, candidate.M12, candidate.M13), w0, Relative * w0.Length())
+                && Close(new Vector3(candidate.M21, candidate.M22, candidate.M23), w1, Relative * w1.Length())
+                && Close(new Vector3(candidate.M31, candidate.M32, candidate.M33), w2, Relative * w2.Length())
+                && Close(candidate.Translation, world.Translation, Relative * MathF.Max(1f, world.Translation.Length()));
         }
 
         private static float MinRowLength(Matrix4x4 m) => MathF.Min(

@@ -45,16 +45,15 @@ public sealed partial class MainWindow
         };
         // The list with a small button bar under it; the bar follows the list's visibility (it is
         // hidden with the list while the panel shows the CHAR BANK).
-        Button BarButton(string text, string tip, Action click)
+        Button BarButton(string name, Control icon, string tip, Action click)
         {
             Button b = new Button
             {
-                Content = text,
-                Padding = new Thickness(6.0, 1.0),
-                Margin = new Thickness(0.0, 0.0, 3.0, 0.0),
-                FontSize = 11.0
+                Padding = new Thickness(4.0, 2.0),
+                Margin = new Thickness(0.0, 0.0, 3.0, 0.0)
             };
             ToolTip.SetTip(b, tip);
+            PanelIcons.Apply(b, name, icon, 14.0);
             b.Click += delegate { click(); };
             return b;
         }
@@ -63,10 +62,12 @@ public sealed partial class MainWindow
             Margin = new Thickness(0.0, 3.0, 0.0, 0.0),
             Children =
             {
-                BarButton("New", "New animation", NewAnimation),
-                BarButton("Folder", "New folder", NewFolder),
-                BarButton("Delete", "Delete the selected animations and folders (Delete)", DeleteBankSelection),
-                BarButton("Retarget…", "Retarget animations from one character onto another", () => _ = OpenRetarget())
+                BarButton("New animation", PanelIcons.NewAnimation(), "", NewAnimation),
+                BarButton("New folder", PanelIcons.NewFolder(), "", NewFolder),
+                BarButton("Delete", PanelIcons.DeleteAnimation(), "Delete the selected animations and folders (Delete)", DeleteBankSelection),
+                BarButton("Retarget…", PanelIcons.Retarget(), "Retarget animations from one character onto another", () => _ = OpenRetarget()),
+                BarButton("Link banks…", PanelIcons.LinkBanks(), "Link characters with compatible skeletons so they share one Anim Bank", () => _ = OpenLinkBanks()),
+                BarButton("Unlink bank", PanelIcons.UnlinkBank(), "Stop sharing this character's Anim Bank (it keeps a copy of every animation)", UnlinkBank)
             }
         };
         bar.Bind(Visual.IsVisibleProperty, _animations.GetObservable(Visual.IsVisibleProperty));
@@ -100,7 +101,7 @@ public sealed partial class MainWindow
     {
         EnsureTransformTools();
         // Top: the action buttons, two to a row.
-        UniformGrid actions = new UniformGrid { Columns = 2 };
+        UniformGrid actions = new UniformGrid { Columns = 6 };
         foreach (Button action in _transformActions!)
         {
             action.Margin = new Thickness(0.0, 0.0, 3.0, 3.0);
@@ -427,20 +428,12 @@ public sealed partial class MainWindow
 
     private Control PointOfViewButtons()
     {
-        Button button = new Button
-        {
-            Content = "Set point of view",
-            FontSize = 11.0
-        };
+        Button button = PanelIcons.Apply(new Button { Padding = new Thickness(4.0, 2.0) }, "Set point of view", PanelIcons.SetPointOfView(), 14.0);
         button.Click += delegate
         {
             SetBlendshapePointOfView();
         };
-        Button button2 = new Button
-        {
-            Content = "Camera",
-            FontSize = 11.0
-        };
+        Button button2 = PanelIcons.Apply(new Button { Padding = new Thickness(4.0, 2.0) }, "Camera", PanelIcons.BlendshapeCamera(), 14.0);
         button2.Click += delegate
         {
             ToggleBlendshapeCamera();
@@ -461,10 +454,11 @@ public sealed partial class MainWindow
     {
         // Play, its mode, then the stepping and key buttons (a viewer design: the frame field, key
         // range, gap field and key info left the toolbar; the Curves tab rides above the panel).
-        Button ToolButton(string content, string tip, Action click)
+        Button ToolButton(string name, Control icon, string tip, Action click)
         {
-            var b = new Button { Content = content, MinWidth = 30.0, HorizontalContentAlignment = HorizontalAlignment.Center };
+            var b = new Button { MinWidth = 30.0, HorizontalContentAlignment = HorizontalAlignment.Center };
             ToolTip.SetTip(b, tip);
+            PanelIcons.Apply(b, name, icon, 14.0);
             b.Click += delegate { click(); };
             return b;
         }
@@ -476,12 +470,12 @@ public sealed partial class MainWindow
         wrapPanel.Children.AddRange([
             _play,
             _playModeButton,
-            ToolButton("|◀", "Previous key", () => StepKey(-1)),
-            ToolButton("◀", "Previous frame", () => SetTime(_time - 1f)),
-            ToolButton("▶", "Next frame", () => SetTime(_time + 1f)),
-            ToolButton("▶|", "Next key", () => StepKey(1)),
-            ToolButton("Key", "Key the playhead in the current stack (K)", () => CreateKey()),
-            ToolButton("Delete", "Delete the selected keys (Del)", () => DeleteKeys(closeGaps: false)),
+            ToolButton("Previous key", PanelIcons.PreviousKey(), "", () => StepKey(-1)),
+            ToolButton("Previous frame", PanelIcons.PreviousFrame(), "", () => SetTime(_time - 1f)),
+            ToolButton("Next frame", PanelIcons.NextFrame(), "", () => SetTime(_time + 1f)),
+            ToolButton("Next key", PanelIcons.NextKey(), "", () => StepKey(1)),
+            ToolButton("Key", PanelIcons.CreateKey(), "Key the playhead in the current stack (K)", () => CreateKey()),
+            ToolButton("Delete keys", PanelIcons.DeleteKey(), "Delete the selected keys (Del)", () => DeleteKeys(closeGaps: false)),
         ]);
         DockPanel dockPanel = new DockPanel
         {
@@ -626,18 +620,16 @@ public sealed partial class MainWindow
     /// </summary>
     private Control StackerBody()
     {
-        _stackerKey ??= MixerButton("Key", "Create a key at the playhead in the current stack (K)", () => CreateKey());
-        _stackerDelete ??= MixerButton("Delete", "Delete the selected keys (Del)", () => DeleteKeys(closeGaps: false));
-        _stackerSelect ??= MixerButton("All keys", "Select every key of the current stack (Ctrl+A in the timebar)", SelectAllStackKeys);
-        _stackerPrevious ??= MixerButton("◀ Stack", "Make the stack above the current one current", () => StepActiveStack(-1));
-        _stackerNext ??= MixerButton("Stack ▶", "Make the stack below the current one current", () => StepActiveStack(1));
+        _stackerKey ??= MixerButton("Key", PanelIcons.CreateKey(), "Create a key at the playhead in the current stack (K)", () => CreateKey());
+        _stackerDelete ??= MixerButton("Delete keys", PanelIcons.DeleteKey(), "Delete the selected keys (Del)", () => DeleteKeys(closeGaps: false));
+        _stackerSelect ??= MixerButton("All keys", PanelIcons.SelectAllKeys(), "Select every key of the current stack (Ctrl+A in the timebar)", SelectAllStackKeys);
+        _stackerPrevious ??= MixerButton("Previous stack", PanelIcons.PreviousStack(), "Make the stack above the current one current", () => StepActiveStack(-1));
+        _stackerNext ??= MixerButton("Next stack", PanelIcons.NextStack(), "Make the stack below the current one current", () => StepActiveStack(1));
         if (_stackerLoop == null)
         {
             _stackerLoop = new ToggleButton
             {
-                Content = "Loop",
-                FontSize = 9.0,
-                Height = 18.0,
+                Height = 20.0,
                 MinHeight = 0.0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Center,
@@ -645,6 +637,7 @@ public sealed partial class MainWindow
                 Padding = new Thickness(1.0, 0.0)
             };
             ToolTip.SetTip(_stackerLoop, "Loop the current stack (its cycle flag)");
+            PanelIcons.Apply(_stackerLoop, "Loop", PanelIcons.LoopStack());
             _stackerLoop.IsCheckedChanged += delegate
             {
                 if (_stackerSyncing) return;
@@ -673,8 +666,8 @@ public sealed partial class MainWindow
     /// </summary>
     private Control CyclemakerBody()
     {
-        _cycleStepButton ??= MixerButton("Cycle Step", "Generate keyframes for a second step based on existing keys", () => RunMenuCommand(MenuCommand.CycleStep, null));
-        _cycleSideButton ??= MixerButton("Cycle Side", "Mirror selected joints/controllers to the opposite side for the other step of your cycle", () => RunMenuCommand(MenuCommand.CycleSide, null));
+        _cycleStepButton ??= MixerButton("Cycle Step", PanelIcons.CycleStep(), "Generate keyframes for a second step based on existing keys", () => RunMenuCommand(MenuCommand.CycleStep, null));
+        _cycleSideButton ??= MixerButton("Cycle Side", PanelIcons.CycleSide(), "Mirror selected joints/controllers to the opposite side for the other step of your cycle", () => RunMenuCommand(MenuCommand.CycleSide, null));
         foreach (Control control in new Control[] { _cycleStepButton, _cycleSideButton })
             (control.Parent as Panel)?.Children.Remove(control);
         UniformGrid grid = new UniformGrid

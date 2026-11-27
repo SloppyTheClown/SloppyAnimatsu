@@ -157,6 +157,33 @@ public sealed class FbxEngineExportTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_normalized_scene_exports_unit_scales_as_exactly_one(bool baked)
+    {
+        // Scale drift stored in joint matrices and keys (1.00002 / 0.99998) is removed by
+        // Normalize Scale; the export must then not add round-off of its own.
+        if (Load("19_run.akt") is not { } model) return;
+        SceneRescale.Normalize(model);
+        var character = model.Scene.Characters.First(c => c.Animations.Any(a => a.Stacks.Count > 0));
+        var animation = character.Animations.First(a => a.Stacks.Count > 0);
+        var fbx = new FbxScene(FbxDocument.Read(FbxExporter.Export(model, new FbxExportOptions
+        {
+            Preset = FbxExportPreset.Unity, Baked = baked, Timestamp = Timestamp, Animations = [animation],
+        })));
+        static void NoDrift(float v, string what) =>
+            Assert.True(v == 1f || MathF.Abs(v - 1f) > 1e-3f, $"{what}: {v:R}");
+        foreach (var m in fbx.Models.Where(m => m.Kind == "LimbNode"))
+        {
+            NoDrift(m.Scaling.X, m.Name + " rest X"); NoDrift(m.Scaling.Y, m.Name + " rest Y"); NoDrift(m.Scaling.Z, m.Name + " rest Z");
+        }
+        foreach (var node in fbx.Stacks.SelectMany(s => s.Layers).SelectMany(l => l.CurveNodes).Where(n => n.Property == FbxExporter.LclScaling))
+            foreach (var curve in node.Curves)
+                if (curve != null)
+                    foreach (var v in curve.Values) NoDrift(v, $"{node.Model?.Name} curve");
+    }
+
     [Fact]
     public void An_engine_bake_gives_a_one_frame_pose_a_one_frame_take()
     {

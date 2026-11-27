@@ -162,6 +162,13 @@ public sealed record FbxExportSettings
     public static int FolderPathOptionIndex { get; } =
         Options.ToList().FindIndex(o => o.Label == "Folder path in file names");
 
+    /// <summary>
+    /// Labels of the toggles a settings-only window (an export preset) hides: whoever asks decides
+    /// which animations are exported and how they are split into files.
+    /// </summary>
+    public static IReadOnlyList<string> SettingsOnlyHiddenOptions { get; } =
+        ["Only Selected Animations", "Multi-FBX (one file per animation)", "Multi-FBX (one file per character)"];
+
     /// <summary>The settings a flags word holds.</summary>
     public static FbxExportSettings FromFlags(uint flags) => new()
     {
@@ -213,11 +220,11 @@ public sealed record FbxExportSettings
     /// <summary>The loose meshes the scope exports: every one for the scene, the selected ones otherwise.</summary>
     public IReadOnlyList<Mesh>? LooseMeshes(IEnumerable<Object3D> selection) =>
         Scope == FbxExportScope.Scene ? null
-            : selection.OfType<Mesh>().Where(m => m.BindPose?.Character == null).ToList();
+            : selection.OfType<Mesh>().Where(m => m.BoundCharacter == null).ToList();
 
-    /// <summary>The character an object belongs to: itself, its ancestor, or the one a mesh is bound to.</summary>
+    /// <summary>The character an object belongs to: itself, its ancestor, or the one a mesh is skinned to.</summary>
     public static Character? OwnerOf(Object3D o) =>
-        o as Character ?? o.Ancestor<Character>() ?? (o as Mesh)?.BindPose?.Character;
+        o as Character ?? o.Ancestor<Character>() ?? (o as Mesh)?.BoundCharacter;
 
     /// <summary>
     /// The exporter options for one file. <paramref name="characters"/> and

@@ -160,6 +160,59 @@ public class TransformSpaceTests
         Assert.True(Vector3.Distance(new Vector3(0f, 5f, 0f), WorldOf(rig, rig.Sibling).Translation - siblingBefore.Translation) < 1e-3f);
     }
 
+    [Fact]
+    public void GroupLocalRotate_TurnsEverySelectedJointAboutItsOwnAxis()
+    {
+        var rig = NewRig();
+        var parent = rig.Child.Parent3D!;
+        var drag = Assert.IsType<GroupDrag>(rig.Session.Begin(rig.Animation, [parent, rig.Sibling, rig.Child], 10, out var reason));
+        Assert.Null(reason);
+        Assert.Equal(3, drag.Members.Count);
+        var turn = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.5f);
+
+        drag.Rotate(0, 0.5f);
+
+        var locals = rig.Session.Evaluator.LocalTransforms(rig.Animation, 10);
+        foreach (var member in drag.Members)
+        {
+            var local = locals[rig.Session.Evaluator.IndexOf(member.Controller)];
+            var expected = Quaternion.Normalize(member.BaseLocal.Rotation * turn);
+            Assert.True(MathF.Abs(Quaternion.Dot(expected, local.Rotation)) > 0.9999f, $"{member.Controller.Name} did not turn about its own X");
+            Assert.True(Vector3.Distance(member.BaseLocal.Translation, local.Translation) < 1e-3f, $"{member.Controller.Name} moved");
+        }
+        drag.Cancel();
+    }
+
+    [Fact]
+    public void GroupWorldRotate_TurnsEachJointAboutTheWorldAxis_OnTopOfItsSelectedParent()
+    {
+        var rig = NewRig();
+        var parent = rig.Child.Parent3D!;
+        var drag = Assert.IsType<GroupDrag>(rig.Session.Begin(rig.Animation, [parent, rig.Child], 10, out _));
+        drag.Space = TransformSpace.World;
+        drag.SpaceFrame = Matrix4x4.Identity;
+        var parentBefore = WorldOf(rig, parent);
+        var childBefore = WorldOf(rig, rig.Child);
+        var childLocalBefore = rig.Session.Evaluator.LocalTransforms(rig.Animation, 10)[rig.Session.Evaluator.IndexOf(rig.Child)];
+        var turn = Matrix4x4.CreateRotationZ(0.4f);
+
+        drag.Rotate(2, 0.4f);
+
+        var parentAfter = WorldOf(rig, parent);
+        var childAfter = WorldOf(rig, rig.Child);
+        // Each one turns about world Z through its own pivot; the child's turn adds to the one its
+        // turned parent hands down, so a selected chain curls about the world axis as it does in Local.
+        AssertClose(Axes(parentBefore * turn), Axes(parentAfter));
+        AssertClose(Axes(childBefore * turn * turn), Axes(childAfter));
+        Assert.True(Vector3.Distance(parentBefore.Translation, parentAfter.Translation) < 1e-3f);
+        // The child keeps its offset from its parent: its stored translation is unchanged.
+        var childLocal = rig.Session.Evaluator.LocalTransforms(rig.Animation, 10)[rig.Session.Evaluator.IndexOf(rig.Child)];
+        Assert.True(Vector3.Distance(childLocalBefore.Translation, childLocal.Translation) < 1e-3f);
+        drag.Cancel();
+
+        static Matrix4x4 Axes(Matrix4x4 m) => m with { M41 = 0, M42 = 0, M43 = 0 };
+    }
+
     private sealed record Rig(PoseEditSession Session, Animation Animation, Joint Child, Joint Sibling);
 
     private static Rig NewRig()

@@ -15,7 +15,9 @@ public sealed class RestPoseDialog : Window
     private RestPoseResolution? _choice;
     private readonly List<Button> _buttons = [];
 
-    private RestPoseDialog(int changedSlots)
+    private readonly CheckBox? _follow;
+
+    private RestPoseDialog(int changedSlots, IReadOnlyList<string> peers)
     {
         Title = RestPosePrompt.Title;
         SizeToContent = SizeToContent.WidthAndHeight;
@@ -36,7 +38,7 @@ public sealed class RestPoseDialog : Window
             _buttons.Add(button);
         }
 
-        Content = new StackPanel
+        var body = new StackPanel
         {
             Margin = new Thickness(16),
             Spacing = 14,
@@ -48,9 +50,22 @@ public sealed class RestPoseDialog : Window
                     TextWrapping = Avalonia.Media.TextWrapping.Wrap,
                     Text = RestPosePrompt.Message(changedSlots),
                 },
-                buttons,
             },
         };
+        if (peers.Count > 0)
+        {
+            // A character with a shared Anim Bank: say what the change does to the others, and
+            // offer to give them the same change (on by default, which keeps the bank valid for all).
+            body.Children.Add(new TextBlock
+            {
+                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                Text = RestPosePrompt.SharedBankWarning(peers),
+            });
+            _follow = new CheckBox { Content = RestPosePrompt.FollowLabel(peers), IsChecked = true };
+            body.Children.Add(_follow);
+        }
+        body.Children.Add(buttons);
+        Content = body;
 
         // The prompt has no default answer: Enter presses the answer that has focus, and Escape
         // closes with no answer (DialogLayout's Close).
@@ -59,10 +74,17 @@ public sealed class RestPoseDialog : Window
     }
 
     /// <summary>The user's choice, or null if they cancelled.</summary>
-    public static async Task<RestPoseResolution?> Ask(Window owner, int changedSlots)
+    public static async Task<RestPoseResolution?> Ask(Window owner, int changedSlots) =>
+        (await Ask(owner, changedSlots, [])).Choice;
+
+    /// <summary>
+    /// The user's choice (null if they cancelled), and for a character sharing its Anim Bank with
+    /// <paramref name="peers"/>, whether those take the same ref-pose change.
+    /// </summary>
+    public static async Task<(RestPoseResolution? Choice, bool Follow)> Ask(Window owner, int changedSlots, IReadOnlyList<string> peers)
     {
-        var dialog = new RestPoseDialog(changedSlots);
+        var dialog = new RestPoseDialog(changedSlots, peers);
         await dialog.ShowDialog(owner);
-        return dialog._choice;
+        return (dialog._choice, dialog._follow?.IsChecked == true);
     }
 }

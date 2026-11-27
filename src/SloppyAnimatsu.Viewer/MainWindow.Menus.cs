@@ -192,7 +192,7 @@ public sealed partial class MainWindow
             _menuBar.Items.Add(ToMenuItem(item));
         }
         _keyMenu.ItemsSource = TimelineMenuItems(state);
-        _animationMenu.ItemsSource = MenuModel.AnimationItems(state).Select(ToMenuItem).ToList();
+        _animationMenu.ItemsSource = MenuModel.AnimationContextItems(state, BankMenuRowKind).Select(ToMenuItem).ToList();
         _outlinerMenu.ItemsSource = MenuModel.OutlinerItems(state).Select(ToMenuItem).ToList();
         RefreshContextButton();
     }
@@ -288,6 +288,7 @@ public sealed partial class MainWindow
             HasAnimation = _animation != null,
             HasStack = activeStack != null,
             HasAnimBank = _character?.AnimBank != null,
+            Plugins = _plugins.MenuState(),
             HasBankFolder = _bankFolder != null,
             HasClipboard = _clipboard != null,
             KeepChildrenFixed = _keepChildrenFixed,
@@ -569,6 +570,19 @@ public sealed partial class MainWindow
             {
                 RenameFolder();
             },
+            [MenuCommand.CopyBankItem] = delegate
+            {
+                if (_bankMenuTarget is Animation animation) CopyAnimation(animation);
+                else if (_bankMenuTarget is Folder folder) CopyFolder(folder);
+            },
+            [MenuCommand.DeleteBankItem] = delegate
+            {
+                DeleteBankMenuTarget();
+            },
+            [MenuCommand.RenameBankItem] = delegate
+            {
+                _ = RenameBankItem(_bankMenuTarget);
+            },
             [MenuCommand.CycleStep] = delegate
             {
                 CycleStep();
@@ -609,7 +623,7 @@ public sealed partial class MainWindow
             {
                 if (MenuModel.TryParseContext(entry.Argument, out var context))
                 {
-                    SetContext(context);
+                    RequestContext(context);
                 }
             },
             [MenuCommand.RenameTreeObject] = delegate
@@ -722,6 +736,18 @@ public sealed partial class MainWindow
             [MenuCommand.CheckForUpdates] = async delegate
             {
                 await CheckForUpdates();
+            },
+            [MenuCommand.TogglePlugin] = delegate(MenuEntry entry)
+            {
+                TogglePlugin(entry.Argument);
+            },
+            [MenuCommand.PluginCommand] = delegate(MenuEntry entry)
+            {
+                RunPluginCommand(entry.Argument);
+            },
+            [MenuCommand.ManagePlugins] = delegate
+            {
+                ShowPluginManager();
             }
         });
         IReadOnlyList<MenuCommand> readOnlyList = MenuModel.Unhandled(CurrentMenuState(), dictionary.Keys);

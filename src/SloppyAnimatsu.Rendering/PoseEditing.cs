@@ -563,6 +563,7 @@ public sealed class PoseEditSession
         var owner = snapshot.Owner ?? Character;
         if (snapshot.RestPose) Pose.ReloadRestPose(owner);
         else Pose.Evaluator(owner).Invalidate();
+        if (snapshot.CheckPose is { } check) check.Evaluator.RestoreCheckPose(check.Values);
         Pose.RefreshPlacements();
     }
 
@@ -599,15 +600,66 @@ public sealed class PoseEditSession
     /// <summary>
     /// Starts posing <paramref name="controller"/> in Paint &amp; Check's runtime pose
     /// (<see cref="PoseEvaluator.HasCheckPose"/>): the skin follows, the scene keeps nothing.
-    /// A constrained object or an IK/reverse-foot controller is refused, as for the rest pose.
+    /// An IK or reverse-foot controller drags its chain along, and a posed joint takes the IK
+    /// controllers of the chains it moves with it (<see cref="PoseEvaluator.FollowCheckPose"/>);
+    /// a constrained object other than a chain joint, a camera target or a blendshape controller is refused.
     /// </summary>
-    public CheckPoseDrag? BeginCheckPose(Object3D controller, out string? reason)
+    public CheckPoseDrag? BeginCheckPose(Object3D controller, out string? reason) =>
+        BeginCheckPose(controller, null, out reason);
+
+    private CheckPoseDrag? BeginCheckPose(Object3D controller, IReadOnlyCollection<Object3D>? excluded, out string? reason)
     {
-        reason = null;
-        if (Evaluator.IndexOf(controller) < 0) reason = $"{controller.Name} is not one of {Character.Name}'s controllers.";
-        else if (controller.Constraint is { } c) reason = $"{controller.Name} is constrained by {c.Name}.";
-        else if (controller is Controller3D) reason = $"{controller.Name} is a controller; pose the joints to check the skin.";
-        return reason == null ? new CheckPoseDrag(this, controller) : null;
+        reason = CheckPoseRefusal(controller);
+        return reason == null ? new CheckPoseDrag(this, controller, CheckChildBaselines(controller, excluded)) { Snap = Snap } : null;
+    }
+
+    /// <summary>Why <paramref name="controller"/> cannot be posed in Paint &amp; Check, or null.</summary>
+    private string? CheckPoseRefusal(Object3D controller)
+    {
+        if (Evaluator.IndexOf(controller) < 0) return $"{controller.Name} is not one of {Character.Name}'s controllers.";
+        // A chain joint's constraint is its IK controller: posing it moves the controller along.
+        if (controller.Constraint is { } c && !(c is ControllerIK ik && ik.Chain.Contains(controller)))
+            return $"{controller.Name} is constrained by {c.Name}.";
+        if (controller is CameraTarget or BlendshapeController)
+            return $"{controller.Name} cannot be posed in Paint & Check; pose the joints or an IK controller.";
+        return null;
+    }
+
+    /// <summary>The direct children a Paint &amp; Check drag with <see cref="KeepChildrenFixed"/> must keep in place.</summary>
+    private (Object3D Child, Transform Local)[] CheckChildBaselines(Object3D controller, IReadOnlyCollection<Object3D>? excluded)
+    {
+        if (!KeepChildrenFixed) return [];
+        var children = new List<(Object3D, Transform)>();
+        foreach (var child in controller.Children.OfType<Object3D>())
+        {
+            if (excluded?.Contains(child) == true || CheckPoseRefusal(child) != null) continue;
+            children.Add((child, Evaluator.CheckLocal(Evaluator.IndexOf(child))));
+        }
+        return [.. children];
+    }
+
+    /// <summary>
+    /// Starts posing a selection in Paint &amp; Check's runtime pose, the last of
+    /// <paramref name="controllers"/> leading; every member gets the same change on the same axis
+    /// (<see cref="GroupDrag"/>). The whole drag is one undo step that puts the check pose back.
+    /// </summary>
+    public TransformDrag? BeginCheckPose(IReadOnlyList<Object3D> controllers, out string? reason)
+    {
+        if (controllers.Count == 0) throw new ArgumentException("No controller to pose.", nameof(controllers));
+        if (controllers.Count == 1) return BeginCheckPose(controllers[0], out reason);
+        var evaluator = Evaluator;
+        EditSnapshot TakeCheckPose()
+        {
+            var snapshot = EditSnapshot.Take(Character, Array.Empty<AnimStack>());
+            snapshot.CheckPose = (evaluator, evaluator.CheckPoseValues());
+            return snapshot;
+        }
+        var before = TakeCheckPose();
+        var group = BeginGroup(controllers,
+            c => BeginCheckPose(c, controllers, out var r) is { } d ? (d.WithGrouped(), r) : (null, r),
+            before, TakeCheckPose, "for Paint & Check", out reason);
+        if (group != null) group.ResetEachUpdate = () => evaluator.RestoreCheckPose(before.CheckPose!.Value.Values);
+        return group;
     }
 
     /// <summary>
@@ -678,19 +730,171 @@ public sealed class PoseEditSession
     }
 
     /// <summary>
+    /// Starts posing a selection the one way every pose is edited: the last of
+    /// <paramref name="controllers"/> (the current object) leads, the others undergo the same
+    /// change. <paramref name="checkPose"/> poses Paint &amp; Check's runtime pose; otherwise
+    /// <paramref name="animation"/> null edits the rest pose and an animation keys
+    /// <paramref name="frame"/>. Returns null, with the reason, when the lead cannot be posed.
+    /// </summary>
+    public TransformDrag? BeginPose(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, bool checkPose,
+        out string? reason) =>
+        checkPose ? BeginCheckPose(controllers, out reason)
+        : animation == null ? BeginRestPose(controllers, out reason)
+        : Begin(animation, controllers, frame, out reason);
+
+    /// <summary>
+    /// One edit of a pose by several controllers in turn (typed values, Reset, Mirror): where it
+    /// writes, how each controller is started, and the undo snapshots around it. Every pose layer
+    /// (an animation's keys, the rest pose, Paint &amp; Check's runtime pose) goes through this one
+    /// shape, so the TRANSFORM window's tools behave the same in all of them.
+    /// </summary>
+    private sealed class PosePass
+    {
+        public required EditSnapshot Before { get; init; }
+        public required Func<EditSnapshot> After { get; init; }
+        /// <summary>Starts one member; the selection is passed so its own members are not kept fixed as children.</summary>
+        public required Func<Object3D, (TransformDrag? Drag, string? Reason)> Begin { get; init; }
+        /// <summary>Whether a controller can take a channel (0-8) in this layer.</summary>
+        public required Func<Object3D, int, bool> Takes { get; init; }
+        /// <summary>The words that end the undo step's description ("at frame 12", "in the rest pose").</summary>
+        public required string Where { get; init; }
+        /// <summary>The animation the pass keys, or null for the rest or check pose.</summary>
+        public Animation? Animation { get; init; }
+        public int Frame { get; init; }
+    }
+
+    private PosePass OpenPass(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, bool checkPose)
+    {
+        if (checkPose)
+        {
+            var evaluator = Evaluator;
+            EditSnapshot TakeCheckPose()
+            {
+                var snapshot = EditSnapshot.Take(Character, Array.Empty<AnimStack>());
+                snapshot.CheckPose = (evaluator, evaluator.CheckPoseValues());
+                return snapshot;
+            }
+            return new PosePass
+            {
+                Before = TakeCheckPose(),
+                After = TakeCheckPose,
+                // Grouped: each member builds on what the members before it wrote.
+                Begin = c => BeginCheckPose(c, controllers, out var r) is { } d ? (d.WithGrouped(), r) : (null, r),
+                Takes = (_, _) => true,
+                Where = "for Paint & Check",
+            };
+        }
+        if (animation == null)
+        {
+            RestPose.EnsureEditableRefPose();
+            return new PosePass
+            {
+                Before = TakeRestPoseSnapshot(),
+                After = TakeRestPoseSnapshot,
+                Begin = c => BeginRestPose(c, controllers, out var r) is { } d ? (d, r) : (null, r),
+                Takes = (c, _) => RestPose.CanEdit(c, out string? _),
+                Where = "in the rest pose",
+            };
+        }
+        var stacks = controllers.Select(c => EditableStack(animation, c)).OfType<AnimStack>()
+            .Distinct(ReferenceEqualityComparer.Instance).Cast<AnimStack>().ToArray();
+        return new PosePass
+        {
+            Before = EditSnapshot.Take(Character, stacks),
+            After = () => EditSnapshot.Take(Character, stacks),
+            Begin = c => Begin(animation, c, frame, controllers, out var r) is { } d ? (d, r) : (null, r),
+            Takes = (c, channel) => Animates(animation, c, channel),
+            Where = $"at frame {frame}",
+            Animation = animation,
+            Frame = frame,
+        };
+    }
+
+
+    /// <summary>
+    /// Runs <paramref name="write"/> on each of <paramref name="members"/> in order through
+    /// <paramref name="pass"/>, as one undo step named by <paramref name="describe"/> (given the
+    /// count written). <paramref name="lead"/>, when given, must start: if it cannot, everything is
+    /// put back and its reason returned. A write returns false when it left its member alone.
+    /// Everything is put back when nothing was written or a write throws.
+    /// </summary>
+    private int RunPass(PosePass pass, IEnumerable<Object3D> members, Object3D? lead,
+        Func<Object3D, TransformDrag, bool> write, Func<int, string> describe, out string? reason)
+    {
+        reason = null;
+        int written = 0;
+        try
+        {
+            foreach (var controller in members)
+            {
+                var (drag, why) = pass.Begin(controller);
+                if (drag == null)
+                {
+                    if (ReferenceEquals(controller, lead))
+                    {
+                        reason = why;
+                        Restore(pass.Before);
+                        return 0;
+                    }
+                    continue;
+                }
+                if (write(controller, drag)) written++;
+            }
+        }
+        catch
+        {
+            Restore(pass.Before);
+            throw;
+        }
+        if (written == 0)
+        {
+            Restore(pass.Before);
+            return 0;
+        }
+        Record(new EditRecord($"{describe(written)} {pass.Where}", pass.Before, pass.After()));
+        return written;
+    }
+
+    /// <summary>
     /// The Spinner's value fields:
     /// sets <paramref name="channel"/> (0-2 translation X/Y/Z, 3-5 Euler rotation X/Y/Z in degrees,
     /// 6-8 scale X/Y/Z) of every selected controller's local transform at
     /// <paramref name="frame"/>, each through its own track and own local frame, creating a key
-    /// where there is none. <paramref name="animation"/> null edits the rest pose. The current
+    /// where there is none. <paramref name="animation"/> null edits the rest pose, and
+    /// <paramref name="checkPose"/> Paint &amp; Check's runtime pose. The current
     /// object (the last entry) must be editable and animate the channel; other controllers that
     /// cannot take the value are skipped. The whole edit is one undo step. Returns the number of
     /// controllers written.
     /// </summary>
     public int SetChannelValue(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, int channel,
-        float value, out string? reason)
+        float value, out string? reason, bool checkPose = false)
     {
-        return SetChannelValueCore(animation, controllers, frame, channel, value, out reason);
+        if (channel is < 0 or > 8) throw new ArgumentOutOfRangeException(nameof(channel));
+        if (controllers.Count == 0) throw new ArgumentException("No controller to edit.", nameof(controllers));
+        reason = null;
+        var current = controllers[^1];
+        if (channel >= 6) value = FloorScale(value);
+
+        if (!checkPose && animation != null && !Animates(animation, current, channel))
+        {
+            reason = $"{current.Name}'s track does not animate {Curves.ChannelNames[channel]}.";
+            return 0;
+        }
+        if (!checkPose && animation == null && !RestPose.CanEdit(current, out reason)) return 0;
+
+        var pass = OpenPass(animation, controllers, frame, checkPose);
+        var members = controllers.Distinct(ReferenceEqualityComparer.Instance).Cast<Object3D>().OrderBy(Depth)
+            .Where(c => ReferenceEquals(c, current) || pass.Takes(c, channel)).ToArray();
+        string unit = channel is >= 3 and <= 5 ? "°" : "";
+        int written = RunPass(pass, members, current, (_, drag) =>
+            {
+                drag.Set(WithChannel(drag.BaseLocal, channel, value), (AnimChannels)(1u << channel));
+                return true;
+            },
+            n => $"Set {Curves.ChannelNames[channel]} of {(n == 1 ? current.Name ?? "controller" : $"{n} controllers")} to {value:0.###}{unit}",
+            out reason);
+        if (written == 0) reason ??= $"No selected controller can take {Curves.ChannelNames[channel]}.";
+        return written;
     }
 
     /// <summary>
@@ -718,108 +922,38 @@ public sealed class PoseEditSession
         return true;
     }
 
-    private int SetChannelValueCore(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, int channel,
-        float value, out string? reason)
-    {
-        if (channel is < 0 or > 8) throw new ArgumentOutOfRangeException(nameof(channel));
-        if (controllers.Count == 0) throw new ArgumentException("No controller to edit.", nameof(controllers));
-        reason = null;
-        var current = controllers[^1];
-        var distinct = controllers.Distinct(ReferenceEqualityComparer.Instance).Cast<Object3D>()
-            .OrderBy(Depth).ToArray();
-        if (channel >= 6) value = FloorScale(value);
-
-        if (animation != null && !Animates(animation, current, channel))
-        {
-            reason = $"{current.Name}'s track does not animate {Curves.ChannelNames[channel]}.";
-            return 0;
-        }
-        if (animation == null && !RestPose.CanEdit(current, out reason)) return 0;
-
-        var stacks = animation == null
-            ? Array.Empty<AnimStack>()
-            : controllers.Select(c => EditableStack(animation, c)).OfType<AnimStack>()
-                .Distinct(ReferenceEqualityComparer.Instance).Cast<AnimStack>().ToArray();
-        if (animation == null) RestPose.EnsureEditableRefPose();
-        var before = animation == null ? TakeRestPoseSnapshot() : EditSnapshot.Take(Character, stacks);
-        int written = 0;
-        try
-        {
-            foreach (var controller in distinct)
-            {
-                if (animation != null && !Animates(animation, controller, channel)) continue;
-                string? skipReason;
-                TransformDrag? drag = animation == null
-                    ? BeginRestPose(controller, controllers, out skipReason)
-                    : Begin(animation, controller, frame, controllers, out skipReason);
-                if (drag == null)
-                {
-                    if (ReferenceEquals(controller, current))
-                    {
-                        reason = skipReason;
-                        Restore(before);
-                        return 0;
-                    }
-                    continue;
-                }
-                drag.Set(WithChannel(drag.BaseLocal, channel, value), (AnimChannels)(1u << channel));
-                written++;
-            }
-        }
-        catch
-        {
-            Restore(before);
-            throw;
-        }
-        if (written == 0)
-        {
-            Restore(before);
-            reason = $"No selected controller can take {Curves.ChannelNames[channel]}.";
-            return 0;
-        }
-
-        var after = animation == null ? TakeRestPoseSnapshot() : EditSnapshot.Take(Character, stacks);
-        string what = written == 1 ? current.Name ?? "controller" : $"{written} controllers";
-        string unit = channel is >= 3 and <= 5 ? "°" : "";
-        string where = animation == null ? "in the rest pose" : $"at frame {frame}";
-        Record(new EditRecord($"Set {Curves.ChannelNames[channel]} of {what} to {value:0.###}{unit} {where}",
-            before, after));
-        return written;
-    }
-
     /// <summary>
     /// The TRANSFORM window's Reset: puts the channels of
     /// <paramref name="mask"/> (translation/rotation/scale bits only) of every selected controller
-    /// back to its rest value at <paramref name="frame"/>, keying them where there is no key, as one
-    /// undoable edit. Rotation is reset per Euler channel unless all three are in the mask. A
-    /// controller whose track animates none of the masked channels is skipped. Returns how many
-    /// controllers were written.
+    /// back to its reference-pose value - at <paramref name="frame"/> of <paramref name="animation"/>
+    /// (keying them where there is no key), or in Paint &amp; Check's runtime pose with
+    /// <paramref name="checkPose"/> - as one undoable edit. Rotation is reset per Euler channel
+    /// unless all three are in the mask. A controller that cannot take any of the masked channels
+    /// is skipped. The rest pose itself is the reference, so it has nothing to reset to. Returns
+    /// how many controllers were written.
     /// </summary>
-    public int ResetChannels(Animation animation, IReadOnlyList<Object3D> controllers, int frame, AnimChannels mask,
-        out string? reason)
+    public int ResetChannels(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, AnimChannels mask,
+        out string? reason, bool checkPose = false)
     {
         reason = null;
         mask &= AnimChannels.Translate | AnimChannels.Rotate | AnimChannels.Scale;
         if (mask == 0) { reason = "No channel is ticked in the TRANSFORM window."; return 0; }
         if (controllers.Count == 0) { reason = "Select the controllers to reset."; return 0; }
-        var distinct = controllers.Distinct(ReferenceEqualityComparer.Instance).Cast<Object3D>()
-            .OrderBy(Depth).ToArray();
-        var stacks = controllers.Select(c => EditableStack(animation, c)).OfType<AnimStack>()
-            .Distinct(ReferenceEqualityComparer.Instance).Cast<AnimStack>().ToArray();
-        var before = EditSnapshot.Take(Character, stacks);
-        int written = 0;
-        try
+        if (animation == null && !checkPose)
         {
-            foreach (var controller in distinct)
+            reason = "The rest pose is the reference pose; Reset works on an animation or on Paint & Check.";
+            return 0;
+        }
+        var pass = OpenPass(checkPose ? null : animation, controllers, frame, checkPose);
+        var members = controllers.Distinct(ReferenceEqualityComparer.Instance).Cast<Object3D>()
+            .Where(c => Evaluator.IndexOf(c) >= 0).OrderBy(Depth).ToArray();
+        string first = members.FirstOrDefault()?.Name ?? "controller";
+        int written = RunPass(pass, members, null, (controller, drag) =>
             {
-                int index = Evaluator.IndexOf(controller);
-                if (index < 0) continue;
                 var channels = Enumerable.Range(0, 9)
-                    .Where(c => (mask & (AnimChannels)(1u << c)) != 0 && Animates(animation, controller, c)).ToArray();
-                if (channels.Length == 0) continue;
-                var drag = Begin(animation, controller, frame, controllers, out _);
-                if (drag == null) continue;
-                var rest = Evaluator.RestTransforms[index];
+                    .Where(c => (mask & (AnimChannels)(1u << c)) != 0 && pass.Takes(controller, c)).ToArray();
+                if (channels.Length == 0) return false;
+                var rest = Evaluator.RestTransforms[Evaluator.IndexOf(controller)];
                 var local = drag.BaseLocal;
                 var restEuler = Curves.ToEulerDegrees(rest.Rotation);
                 bool wholeRotation = channels.Count(c => c is >= 3 and <= 5) == 3;
@@ -834,23 +968,71 @@ public sealed class PoseEditSession
                 }
                 if ((keyed & AnimChannels.Rotate) != 0) keyed |= AnimChannels.Rotate;
                 drag.Set(local, keyed);
-                written++;
-            }
-        }
-        catch
+                return true;
+            },
+            n => $"Reset {(n == 1 ? first : $"{n} controllers")}", out reason);
+        if (written == 0) reason ??= "None of the selected controllers can take the ticked channels.";
+        return written;
+    }
+
+    private static Matrix4x4 InverseOf(Matrix4x4 m) => Matrix4x4.Invert(m, out var inverse) ? inverse : Matrix4x4.Identity;
+
+    /// <summary>
+    /// The TRANSFORM window's Mirror in pose mode: puts each selected controller's
+    /// symmetric counterpart (<see cref="MirrorMatch.Find"/>) where the controller is reflected
+    /// across the character's YZ plane, in the pose on screen - the animation at
+    /// <paramref name="frame"/> (keyed), the rest pose, or Paint &amp; Check's runtime pose with
+    /// <paramref name="checkPose"/>. A controller without a side marker is its own counterpart and
+    /// turns as if reflected onto itself. The change is taken relative to the reference pose (the
+    /// counterpart's world is <c>Rt·M·Rs⁻¹·Ws·M</c>, M the reflection), so a rig whose two sides
+    /// use mirrored axes comes out right. Every source is read before anything is written, so
+    /// selecting both sides swaps them. Only the channels of <paramref name="mask"/> are written.
+    /// The rest pose mirrors its side pairs only (it has no reference of its own to mirror central
+    /// joints against). One undo step; returns how many controllers were written.
+    /// </summary>
+    public int MirrorPoseAt(Animation? animation, IReadOnlyCollection<Object3D> sources, int frame, bool checkPose,
+        out string? reason, MirrorMatch? match = null, AnimChannels mask = KeyEditor.AllChannels)
+    {
+        reason = null;
+        match ??= MirrorMatch.Default;
+        if (sources.Count == 0) { reason = "Select the controllers to mirror."; return 0; }
+        if (!checkPose && animation == null)
         {
-            Restore(before);
-            throw;
+            int pairs = MirrorPose(sources, match);
+            if (pairs == 0) reason = "None of the selected objects has a counterpart on the other side to mirror onto.";
+            return pairs;
         }
-        if (written == 0)
+
+        // Phase one: every counterpart's mirrored world, from the pose before the edit.
+        var poseAnimation = checkPose ? null : animation;
+        Evaluator.Invalidate();
+        Evaluator.LocalTransforms(poseAnimation, frame, out var worlds);
+        var rest = Evaluator.RestWorldMatrices();
+        var characterWorld = Character.WorldMatrix;
+        var reflect = InverseOf(characterWorld) * Matrix4x4.CreateScale(-1, 1, 1) * characterWorld;
+        var plan = new Dictionary<Object3D, Matrix4x4>(ReferenceEqualityComparer.Instance);
+        foreach (var source in sources.Distinct())
         {
-            Restore(before);
-            reason = "None of the selected controllers animates the ticked channels.";
+            int s = Evaluator.IndexOf(source);
+            if (s < 0 || match.Find(Character, source) is not { } target) continue;
+            int t = Evaluator.IndexOf(target);
+            if (t < 0) continue;
+            plan[target] = rest[t] * reflect * InverseOf(rest[s]) * worlds[s] * reflect;
+        }
+        if (plan.Count == 0)
+        {
+            reason = "None of the selected objects is a controller with a counterpart to mirror onto.";
             return 0;
         }
-        var after = EditSnapshot.Take(Character, stacks);
-        string what = written == 1 ? distinct.First(c => Evaluator.IndexOf(c) >= 0).Name ?? "controller" : $"{written} controllers";
-        Record(new EditRecord($"Reset {what} at frame {frame}", before, after));
+
+        // Phase two: write them, parents first, so each one is placed under its parent's new world.
+        var targets = plan.Keys.OrderBy(Depth).ToList();
+        var pass = OpenPass(poseAnimation, targets, frame, checkPose);
+        var channels = mask & (AnimChannels.Translate | AnimChannels.Rotate | AnimChannels.Scale);
+        if (channels == 0) channels = AnimChannels.Translate | AnimChannels.Rotate | AnimChannels.Scale;
+        int written = RunPass(pass, targets, null, (target, drag) => drag.SetWorld(plan[target], channels),
+            n => $"Mirror {(n == 1 ? targets[0].Name ?? "controller" : $"{n} controllers")}", out reason);
+        if (written == 0) reason ??= "None of the counterparts can be posed here.";
         return written;
     }
 
@@ -933,16 +1115,59 @@ public sealed class PoseEditSession
     };
 
     /// <summary>
+    /// Paint &amp; Check's reverse-foot roll, twist or bank (<paramref name="channel"/> 10-12,
+    /// radians): every selected reverse foot turns its shoe and re-solves its leg, as one undo step
+    /// that puts the check pose back.
+    /// </summary>
+    private int SetCheckFootAngle(IReadOnlyList<Object3D> controllers, int channel, float value, string name, out string? reason)
+    {
+        reason = null;
+        var feet = controllers.OfType<ControllerReverseFoot>().Distinct().ToArray();
+        if (feet.Length == 0)
+        {
+            reason = $"Select a reverse-foot controller to set its {name}.";
+            return 0;
+        }
+        var evaluator = Evaluator;
+        var before = EditSnapshot.Take(Character, Array.Empty<AnimStack>());
+        before.CheckPose = (evaluator, evaluator.CheckPoseValues());
+        int written = 0;
+        foreach (var foot in feet)
+        {
+            var angles = evaluator.CheckFootAngles(foot);
+            angles = channel switch
+            {
+                10 => angles with { X = value },
+                11 => angles with { Y = value },
+                _ => angles with { Z = value },
+            };
+            if (evaluator.SetCheckFootAngles(foot, angles)) written++;
+        }
+        if (written == 0)
+        {
+            reason = $"No selected reverse foot has a full shoe to set its {name}.";
+            return 0;
+        }
+        var after = EditSnapshot.Take(Character, Array.Empty<AnimStack>());
+        after.CheckPose = (evaluator, evaluator.CheckPoseValues());
+        string who = written == 1 ? feet[0].Name ?? "reverse foot" : $"{written} reverse feet";
+        Record(new EditRecord($"Set {name} of {who} for Paint & Check", before, after));
+        Pose.RefreshPlacements();
+        return written;
+    }
+
+    /// <summary>
     /// Sets an extra channel (9 pole, 10-12 roll/twist/bank in radians, 13-14 blendshape X/Y) of
     /// every selected controller whose editable track animates it, at <paramref name="frame"/>,
     /// creating a key where the stack has none (<see cref="KeyEditor.SetScalarChannel"/>). One
     /// undo step; returns how many controllers were written.
     /// </summary>
     public int SetScalarChannel(Animation? animation, IReadOnlyList<Object3D> controllers, int frame, int channel,
-        float value, out string? reason)
+        float value, out string? reason, bool checkPose = false)
     {
         reason = null;
         string name = ScalarChannelName(channel);
+        if (checkPose && channel is >= 10 and <= 12) return SetCheckFootAngle(controllers, channel, value, name, out reason);
         if (animation == null)
         {
             reason = $"The {name} is keyed in an animation; leave the rest pose first.";
@@ -1098,18 +1323,33 @@ public sealed class PoseEditSession
 
     /// <summary>
     /// Resolves a changed reference pose (the "REFERENCE POSE" dialog) and records it for undo.
+    /// With <paramref name="followers"/> (characters sharing this one's Anim Bank), they take the
+    /// same ref-pose change first and receive the resolved animations, in the same undo step.
     /// Returns the number of keys converted.
     /// </summary>
-    public int ResolveRestPose(RestPoseResolution resolution)
+    public int ResolveRestPose(RestPoseResolution resolution, IReadOnlyList<Character>? followers = null)
     {
         var objects = new List<SceneObject>(Poses());
         if (resolution == RestPoseResolution.ConvertAnimations)
             objects.AddRange(Character.Animations.SelectMany(a => a.Stacks).Where(s => !s.IsAdditive));
-        var before = EditSnapshot.TakeRestPose(Character, objects);
+        followers = resolution == RestPoseResolution.ReturnToPrevious ? null : followers;
+        // Returning removes the edited pose and repoints the character, and following edits other
+        // characters' poses and banks: both steps keep the whole rig.
+        bool structural = resolution == RestPoseResolution.ReturnToPrevious || followers is { Count: > 0 };
+        var before = structural ? EditSnapshot.TakeRig(Character, Character.Model.Scene) : EditSnapshot.TakeRestPose(Character, objects);
         int converted;
         try
         {
+            if (followers is { Count: > 0 }) SharedAnimBanks.FollowRefPose(Character, followers);
             converted = RestPose.Resolve(resolution);
+            if (followers is { Count: > 0 } && Character.AnimBank is { } bank)
+            {
+                // Every animation was rewritten for the new pose: the followers get them all again.
+                var all = new HashSet<AktObject>(
+                    bank.Source.PreOrder().Where(o => Character.Model.Wrap(o) is Animation),
+                    ReferenceEqualityComparer.Instance);
+                SharedAnimBanks.Sync(Character.Model, Character, all);
+            }
         }
         catch
         {
@@ -1117,13 +1357,18 @@ public sealed class PoseEditSession
             throw;
         }
         Pose.ReloadRestPose(Character);
+        foreach (var follower in followers ?? [])
+            if (Pose.Characters.FirstOrDefault(c => ReferenceEquals(c.Source, follower.Source)) is { } shown)
+                Pose.ReloadRestPose(shown);
         string description = resolution switch
         {
             RestPoseResolution.ConvertAnimations => $"Convert {converted} keys to the new ref pose",
             RestPoseResolution.KeepAnimations => "Keep the animations on the new ref pose",
             _ => "Return to the previous ref pose",
         };
-        Record(new EditRecord(description, before, EditSnapshot.TakeRestPose(Character, objects)));
+        if (followers is { Count: > 0 }) description += $" (and {followers.Count} linked character(s))";
+        Record(new EditRecord(description, before,
+            structural ? EditSnapshot.TakeRig(Character, Character.Model.Scene) : EditSnapshot.TakeRestPose(Character, objects)));
         return converted;
     }
 
@@ -1199,6 +1444,9 @@ public sealed class PoseEditSession
     }
 
     /// <summary>Deletes a folder with everything inside it.</summary>
+    public Folder CopyFolder(Folder folder) =>
+        Structure($"Copy folder '{folder.Name}'", [folder.Parent!, Character], () => Bank.CopyFolder(folder), _ => true);
+
     public void DeleteFolder(Folder folder) =>
         Structure($"Delete folder '{folder.Name}'", [folder.Parent!, Character],
             () => { Bank.DeleteFolder(folder); return true; }, _ => true);
@@ -1567,6 +1815,9 @@ public abstract class TransformDrag
     /// </summary>
     public virtual void Swivel(float angle) { }
 
+    /// <summary>The swivel without going back to its start first (a group restores its whole pose once).</summary>
+    internal virtual void SwivelOnce(float angle) { }
+
     /// <summary>
     /// IK and reverse-foot controllers are never scaled: their tracks carry scale channels, but the
     /// gizmo has no scale handles on them and the Spinner's scale parts are disabled.
@@ -1578,7 +1829,7 @@ public abstract class TransformDrag
     /// about its own local axis <paramref name="axis"/>, keeping the drag's translation. With
     /// snapping on, the turned angle is snapped first.
     /// </summary>
-    public void Rotate(int axis, float angle)
+    public virtual void Rotate(int axis, float angle)
     {
         if (Space != TransformSpace.Local) { RotateInSpace(axis, angle); return; }
         var delta = Quaternion.CreateFromAxisAngle(Unit(axis), Snap.SnapAngle(angle));
@@ -1590,7 +1841,7 @@ public abstract class TransformDrag
     /// its parent's axis <paramref name="axis"/>, keeping the drag's rotation. With snapping on, the
     /// resulting coordinate is snapped to the move step.
     /// </summary>
-    public void Translate(int axis, float distance)
+    public virtual void Translate(int axis, float distance)
     {
         if (!CanTranslate) return;
         if (Space != TransformSpace.Local) { TranslateInSpace(axis, distance); return; }
@@ -1611,7 +1862,7 @@ public abstract class TransformDrag
     /// by <paramref name="second"/> along axis <c>(normal + 2) % 3</c>. With snapping on, both
     /// resulting coordinates are snapped to the move step.
     /// </summary>
-    public void TranslatePlane(int normal, float first, float second)
+    public virtual void TranslatePlane(int normal, float first, float second)
     {
         if (!CanTranslate) return;
         if (Space != TransformSpace.Local) { TranslatePlaneInSpace(normal, first, second); return; }
@@ -1632,7 +1883,7 @@ public abstract class TransformDrag
     /// <see cref="HermiteKeyInterpolator.MinScale"/>, the floor evaluation applies to interpolated scale
     /// anyway, so a drag never sets a zero scale.
     /// </summary>
-    public void Scale(int axis, float factor)
+    public virtual void Scale(int axis, float factor)
     {
         if (!CanScale) return;
         if (Space != TransformSpace.Local) { ScaleInSpace(axis, factor); return; }
@@ -1684,10 +1935,14 @@ public abstract class TransformDrag
     internal virtual bool CompensatesNow => Controller.CompensatesParentScale;
 
     /// <summary>Poses the controller from a world matrix, through the local transform the key stores.</summary>
-    private void SetWorld(Matrix4x4 world, AnimChannels channels)
+    internal bool SetWorld(Matrix4x4 world, AnimChannels channels)
     {
         if (WorldComposition.TryDecompose(world, ParentWorldMatrix, ParentWorldScale, CompensatesNow, out var local))
+        {
             Set(Transform.FromMatrixLoose(local), channels);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>A unit world direction of the drag's space (row <paramref name="axis"/> of <see cref="SpaceFrame"/>).</summary>
@@ -1937,7 +2192,7 @@ public sealed class EditDrag : TransformDrag
     }
 
     /// <summary>The swivel without going back to its start first (a group restores all stacks once).</summary>
-    internal void SwivelOnce(float angle)
+    internal override void SwivelOnce(float angle)
     {
         // The angle comes in the left-side convention; a right-side chain turns the other way.
         if (Controller is ControllerIK ik) _session.Editor.SwivelChain(Stack, KeyIndex, ik, angle * SpinnerDial.SwivelSide(ik));
@@ -2034,33 +2289,100 @@ public sealed class CheckPoseDrag : TransformDrag
 {
     private readonly PoseEditSession _session;
     private readonly int _index;
-    private readonly Transform? _before;
+    private readonly Transform?[]? _before;
+    private readonly (Object3D Child, Transform Local)[] _children;
 
-    internal CheckPoseDrag(PoseEditSession session, Object3D controller)
+    internal CheckPoseDrag(PoseEditSession session, Object3D controller, (Object3D Child, Transform Local)[] children)
         : base(controller, session.Evaluator.CheckLocal(session.Evaluator.IndexOf(controller)))
     {
         _session = session;
         _index = session.Evaluator.IndexOf(controller);
-        _before = session.Evaluator.CheckValue(_index);
+        _before = session.Evaluator.CheckPoseValues();
+        _children = children;
         CaptureParentWorld(_session.Evaluator);
     }
 
     public override bool CanTranslate => true;
     public override bool CanScale => IsScalable(Controller);
 
+    /// <summary>An IK or reverse-foot controller whose whole chain is posable swivels it, as at a key.</summary>
+    public override bool CanSwivel => SwivelEnds() != null;
+
+    /// <summary>The chain's first joint and the joint the swivel turns about (the ankle for a reverse foot).</summary>
+    private (ControllerIK Ik, Object3D Root, Object3D End)? SwivelEnds()
+    {
+        if (Controller is not ControllerIK ik) return null;
+        var chain = ik.Chain;
+        bool foot = ik is ControllerReverseFoot;
+        if (chain.Count < (foot ? 4 : 2) || chain.Any(j => _session.Evaluator.IndexOf(j) < 0)) return null;
+        return (ik, chain[0], chain[foot ? 2 : chain.Count - 1]);
+    }
+
+    private Transform?[]? _swivelBase;
+    private bool _swivelStarted;
+
+    public override void Swivel(float angle)
+    {
+        if (!_swivelStarted) { _swivelBase = _session.Evaluator.CheckPoseValues(); _swivelStarted = true; }
+        else _session.Evaluator.RestoreCheckPose(_swivelBase);
+        SwivelOnce(angle);
+    }
+
+    /// <summary>
+    /// <see cref="KeyEditor.SwivelLocals"/> on the check pose: the same swing a key gets, then the
+    /// other IK controllers follow the moved chain while this one stays where it is.
+    /// </summary>
+    internal override void SwivelOnce(float angle)
+    {
+        if (SwivelEnds() is not var (ik, root, end)) return;
+        var evaluator = _session.Evaluator;
+        var local = evaluator.LocalTransforms(null, 0, out var world);
+        // The angle comes in the left-side convention; a right-side chain turns the other way.
+        if (!KeyEditor.SwivelLocals(evaluator, root, end, local, world, angle * SpinnerDial.SwivelSide(ik),
+                out var rootLocal, out var endLocal))
+            return;
+        evaluator.SetCheckLocal(evaluator.IndexOf(root), rootLocal);
+        evaluator.SetCheckLocal(evaluator.IndexOf(end), endLocal);
+        evaluator.FollowCheckPose(root, keepInPlace: ik);
+    }
+
+    /// <summary>A member of a <see cref="GroupDrag"/>, which puts the pose back once per update itself.</summary>
+    internal bool Grouped { get; private set; }
+
+    internal CheckPoseDrag WithGrouped()
+    {
+        Grouped = true;
+        return this;
+    }
+
     public override void Set(Transform local, AnimChannels channels)
     {
-        _session.Evaluator.SetCheckLocal(_index, local);
+        // Each update starts from the pose before the drag, so what follows the object is not
+        // compounded across updates. In a group the group does that once for all its members.
+        var evaluator = _session.Evaluator;
+        if (!Grouped) evaluator.RestoreCheckPose(_before);
+        evaluator.SetCheckLocal(_index, local);
+        // Keep children fixed: the same per-child local the key and rest-pose drags write.
+        foreach (var (child, childLocal) in _children)
+            evaluator.SetCheckLocal(evaluator.IndexOf(child), KeyEditor.KeptChildLocal(childLocal, BaseLocal, local));
+        evaluator.FollowCheckPose(Controller);
         Posed = local;
     }
 
+    /// <summary>One undo step that puts the check pose back (the document itself is unchanged).</summary>
     public override EditRecord Commit()
     {
-        var none = EditSnapshot.Take(_session.Character, Array.Empty<AnimStack>());
-        return new EditRecord($"Posed {Controller.Name} for Paint & Check (not saved)", none, none);
+        var evaluator = _session.Evaluator;
+        var before = EditSnapshot.Take(_session.Character, Array.Empty<AnimStack>());
+        before.CheckPose = (evaluator, _before);
+        var after = EditSnapshot.Take(_session.Character, Array.Empty<AnimStack>());
+        after.CheckPose = (evaluator, evaluator.CheckPoseValues());
+        var record = new EditRecord($"Posed {Controller.Name} for Paint & Check", before, after);
+        _session.Record(record);
+        return record;
     }
 
-    public override void Cancel() => _session.Evaluator.SetCheckLocal(_index, _before);
+    public override void Cancel() => _session.Evaluator.RestoreCheckPose(_before);
 
     internal override Matrix4x4[] Worlds(out Transform[] locals)
     {
@@ -2177,6 +2499,8 @@ public sealed class GroupDrag : TransformDrag
     private readonly TransformDrag _lead;
     private readonly TransformDrag[] _members;
     private readonly Matrix4x4[] _startWorlds;
+    private readonly Matrix4x4[] _startParentWorlds;
+    private readonly Vector3[] _startParentScales;
     private readonly Matrix4x4 _leadFrameWorld;
     private readonly Vector3 _leadFrameScale;
     private readonly bool _leadFollows;
@@ -2199,6 +2523,8 @@ public sealed class GroupDrag : TransformDrag
         _members = followers.Append(lead).OrderBy(d => Depth(d.Controller)).ToArray();
         var worlds = lead.Worlds(out var locals);
         _startWorlds = _members.Select(d => WorldOf(d.Controller, worlds)).ToArray();
+        _startParentWorlds = _members.Select(d => d.ParentWorldMatrix).ToArray();
+        _startParentScales = _members.Select(d => d.ParentWorldScale).ToArray();
         var frame = lead.FrameParent;
         _leadFrameWorld = WorldOf(frame, worlds);
         _leadFrameScale = ScaleOf(frame, locals);
@@ -2226,11 +2552,12 @@ public sealed class GroupDrag : TransformDrag
         if (_swivelBase == null) _swivelBase = _after();
         else _session.Restore(_swivelBase);
         foreach (var member in _members)
-            if (member is EditDrag edit && edit.CanSwivel) edit.SwivelOnce(angle);
+            if (member.CanSwivel) member.SwivelOnce(angle);
     }
 
     public override void Set(Transform local, AnimChannels channels)
     {
+        ResetEachUpdate?.Invoke();
         var leadNew = WorldComposition.Compose(local.ToMatrix(), _leadFrameWorld, _leadFrameScale, _lead.CompensatesNow);
         Matrix4x4.Invert(_startWorlds[Array.IndexOf(_members, _lead)], out var leadStartInverse);
         var change = leadStartInverse * leadNew;
@@ -2249,6 +2576,91 @@ public sealed class GroupDrag : TransformDrag
             member.Set(Transform.FromMatrixLoose(m), moved);
         }
         Posed = local;
+    }
+
+    /// <summary>
+    /// akeytsu's group drag: every member undergoes the current object's world-space change about
+    /// the current object's pivot (<see cref="Set"/>). Off by default: a gizmo or Spinner drag then
+    /// gives every member the same change on the same axis about its own pivot - in the Local space
+    /// about its own axes, like the TRANSFORM fields - so turning X on three finger joints curls all three.
+    /// </summary>
+    public bool AkeytsuParity { get; set; }
+
+    public override void Rotate(int axis, float angle)
+    {
+        if (AkeytsuParity) { base.Rotate(axis, angle); return; }
+        EachMember(m => m.Rotate(axis, angle), carryParent: true);
+    }
+
+    public override void Translate(int axis, float distance)
+    {
+        if (AkeytsuParity) { base.Translate(axis, distance); return; }
+        if (!CanTranslate) return;
+        EachMember(m => m.Translate(axis, distance), carryParent: false);
+    }
+
+    public override void TranslatePlane(int normal, float first, float second)
+    {
+        if (AkeytsuParity) { base.TranslatePlane(normal, first, second); return; }
+        if (!CanTranslate) return;
+        EachMember(m => m.TranslatePlane(normal, first, second), carryParent: false);
+    }
+
+    public override void Scale(int axis, float factor)
+    {
+        if (AkeytsuParity) { base.Scale(axis, factor); return; }
+        if (!CanScale) return;
+        EachMember(m => m.Scale(axis, factor), carryParent: true);
+    }
+
+    /// <summary>
+    /// Run before every update of a pose whose members' own updates would each go back to the
+    /// drag's start (Paint &amp; Check's runtime pose): the group goes back once, then poses every member.
+    /// </summary>
+    internal Action? ResetEachUpdate { get; set; }
+
+    /// <summary>
+    /// Applies one drag operation to every member on its own, ancestors first.
+    /// Local space edits each member's own channel about its own axes, so a selected child also
+    /// follows its selected parent (a chain curls).
+    /// World and Screen turn or scale each member about the space's axis through its own pivot, on
+    /// top of what its selected parent now hands down (<paramref name="carryParent"/>): the same
+    /// world direction for every bone, so a chain curls in that direction as it does in Local.
+    /// A move instead gives every member the same world offset from where it started, so a
+    /// selected child is not moved twice.
+    /// </summary>
+    private void EachMember(Action<TransformDrag> operation, bool carryParent)
+    {
+        ResetEachUpdate?.Invoke();
+        for (int k = 0; k < _members.Length; k++)
+        {
+            var member = _members[k];
+            member.Space = Space;
+            member.SpaceFrame = SpaceFrame;
+            if (Space == TransformSpace.Local) { operation(member); continue; }
+            var worlds = member.Worlds(out var locals);
+            var parent = member.FrameParent;
+            var parentNow = WorldOf(parent, worlds);
+            var parentScaleNow = ScaleOf(parent, locals);
+            if (carryParent)
+            {
+                // The member's world-space edit starts from where its parent now puts it.
+                member.ParentWorldMatrix = parentNow;
+                member.ParentWorldScale = parentScaleNow;
+                operation(member);
+                continue;
+            }
+            member.ParentWorldMatrix = _startParentWorlds[k];
+            member.ParentWorldScale = _startParentScales[k];
+            operation(member);
+            if (parentNow == _startParentWorlds[k] && parentScaleNow == _startParentScales[k]) continue;
+            // Re-express the moved start world against the parent's new world.
+            var world = WorldComposition.Compose(member.Posed.ToMatrix(), _startParentWorlds[k],
+                _startParentScales[k], member.CompensatesNow);
+            if (WorldComposition.TryDecompose(world, parentNow, parentScaleNow, member.CompensatesNow, out var m))
+                member.Set(member.Posed with { Translation = Transform.FromMatrixLoose(m).Translation }, AnimChannels.Translate);
+        }
+        Posed = _lead.Posed;
     }
 
     public override EditRecord Commit()
@@ -2351,7 +2763,11 @@ public sealed class EditHistory : IDisposable
         // The document is in the After state now: that side is not needed until this step is undone.
         ReleaseIfUnneeded(after);
         Enforce();
+        Pushed?.Invoke(_done.Count > 0 ? _done[^1] : record);
     }
+
+    /// <summary>Raised after a step was recorded (the document is in its After state).</summary>
+    public event Action<EditRecord>? Pushed;
 
     /// <summary>The edit to undo (its <see cref="EditRecord.Before"/> is to be restored), or null.</summary>
     public EditRecord? Undo()
@@ -2560,13 +2976,23 @@ public sealed class EditSnapshot
         _hiddenCounter = source._hiddenCounter;
         _shareLargeArrays = source._shareLargeArrays;
         _wholeDocument = source._wholeDocument;
+        CheckPose = source.CheckPose;
     }
+
+    /// <summary>
+    /// Paint &amp; Check's runtime pose to put back with this snapshot (it lives in the evaluator, not
+    /// in the document): the evaluator and its check-pose values, null values for none.
+    /// </summary>
+    public (PoseEvaluator Evaluator, Transform?[]? Values)? CheckPose { get; set; }
 
     /// <summary>The character whose evaluation must be refreshed after a restore.</summary>
     public Character? Owner { get; }
 
     /// <summary>Whether the snapshot holds rest poses, so that restoring it moves the rest pose and the skin's bind matrices.</summary>
     public bool RestPose { get; }
+
+    /// <summary>The objects whose fields and child lists this snapshot holds.</summary>
+    public IEnumerable<AktObject> Targets => _objects.Select(e => e.Target);
 
     public static EditSnapshot Take(AnimStack stack) =>
         new(stack.Animation?.Character, false, Copy([stack]));

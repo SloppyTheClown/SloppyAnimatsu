@@ -120,7 +120,9 @@ public sealed partial class MainWindow
     /// </summary>
     private void StoreViewState(SceneModel model)
     {
+        PluginsSceneSaving();
         StoreSceneViewCamera(model);
+        CheckPoseStore.Store(model);
         if (_character == null) return;
         model.Scene.CurrentCharacter = _character;
         if (_animation == null || !_character.Animations.Contains(_animation)) return;
@@ -201,9 +203,9 @@ public sealed partial class MainWindow
         }, () => created);
     }
 
-    private void CopyAnimation()
+    private void CopyAnimation(Animation? which = null)
     {
-        Animation original = _animation;
+        Animation? original = which ?? _animation;
         if (original != null)
         {
             Animation copy = null;
@@ -212,6 +214,17 @@ public sealed partial class MainWindow
                 copy = session.CopyAnimation(original);
             }, () => copy);
         }
+    }
+
+    /// <summary>Copies an Anim Bank folder with every folder and animation inside it, as one undo step.</summary>
+    private void CopyFolder(Folder folder)
+    {
+        Folder copy = null;
+        RunBankEdit(delegate(PoseEditSession session)
+        {
+            copy = session.CopyFolder(folder);
+        }, () => null);
+        if (copy != null) _status.Text = $"Copied folder '{folder.Name}' to '{copy.Name}'.";
     }
 
     private void DeleteAnimation()
@@ -297,6 +310,58 @@ public sealed partial class MainWindow
 
     /// <summary>The bank's selected animations.</summary>
     private List<Animation> SelectedBankAnimations() => SelectedBankItems().OfType<Animation>().ToList();
+
+    // ---- the right-click menu: its rows act on the row that was clicked -----------------------
+
+    /// <summary>The bank row the last right-click landed on (null: empty space or the rest pose row).</summary>
+    private SceneObject? _bankMenuTarget;
+
+    private BankRowKind BankMenuRowKind => _bankMenuTarget switch
+    {
+        Animation => BankRowKind.Animation,
+        Folder => BankRowKind.Folder,
+        _ => BankRowKind.None,
+    };
+
+    /// <summary>
+    /// Before the bank's context menu opens: note the row under the pointer (the selected row when
+    /// the menu comes from the keyboard), select it unless it is already part of the selection, and
+    /// build the menu for it.
+    /// </summary>
+    private void BankContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        SceneObject? target;
+        if (e.TryGetPosition(_animations, out Point point))
+            target = BankRowAtPoint(point).Item?.Value;
+        else
+            target = _bankFolder ?? (SceneObject?)SelectedBankItems().FirstOrDefault();
+        if (target is not (Animation or Folder)) target = null;
+        _bankMenuTarget = target;
+        if (target != null && !SelectedBankItems().Contains(target))
+        {
+            var row = (_animations.ItemsSource as IEnumerable<Item<SceneObject>>)?.FirstOrDefault(i => i.Value == target);
+            if (row != null) _animations.SelectedItem = row;
+        }
+        _animationMenu.ItemsSource = MenuModel.AnimationContextItems(CurrentMenuState(), BankMenuRowKind).Select(ToMenuItem).ToList();
+    }
+
+    /// <summary>Delete from the right-click menu: the selection when it holds the clicked row, else that row.</summary>
+    private void DeleteBankMenuTarget()
+    {
+        if (_bankMenuTarget is not { } target) return;
+        List<SceneObject> selected = SelectedBankItems();
+        DeleteBankRows(selected.Contains(target) ? selected : [target]);
+    }
+
+    /// <summary>Renames one bank row, animation or folder.</summary>
+    private async Task RenameBankItem(SceneObject? item)
+    {
+        if (item is not (Animation or Folder)) return;
+        string title = item is Folder ? "Rename folder" : "Rename animation";
+        string name = await TextPromptDialog.Ask(this, title, "Name", item.Name ?? "");
+        if (name != null && name != item.Name)
+            RunBankEdit(session => session.Rename(item, name));
+    }
 
     private async Task RenameAnimation()
     {
@@ -684,7 +749,7 @@ public sealed partial class MainWindow
         if (folder != null && hasContent)
         {
             icon.Cursor = new Cursor(StandardCursorType.Hand);
-            // Ctrl+click opens (or closes) the folder and every folder below it.
+            // Alt+click opens (or closes) the folder and every folder below it.
             icon.AddHandler(InputElement.PointerPressedEvent, delegate(object? _, PointerPressedEventArgs e)
             {
                 if (e.GetCurrentPoint(icon).Properties.IsLeftButtonPressed)
@@ -692,7 +757,7 @@ public sealed partial class MainWindow
                     e.Handled = true;
                     _bankPressKeepsSelection = false;
                     _bankDragItem = null;
-                    ToggleBankFolder(folder, e.KeyModifiers.HasFlag(KeyModifiers.Control));
+                    ToggleBankFolder(folder, e.KeyModifiers.HasFlag(KeyModifiers.Alt));
                 }
             }, RoutingStrategies.Bubble, handledEventsToo: true);
             row.DoubleTapped += delegate(object? _, TappedEventArgs e)
@@ -737,14 +802,17 @@ public sealed partial class MainWindow
     private Item<SceneObject>? BankItemAt(PointerEventArgs e) => BankRowAt(e).Item;
 
     /// <summary>The row under the pointer, and how far down that row the pointer is (0 top, 1 bottom).</summary>
-    private (Item<SceneObject>? Item, double Fraction) BankRowAt(PointerEventArgs e)
+    private (Item<SceneObject>? Item, double Fraction) BankRowAt(PointerEventArgs e) => BankRowAtPoint(e.GetPosition(_animations));
+
+    /// <summary>The row at a point in the bank list's coordinates, and how far down that row it is.</summary>
+    private (Item<SceneObject>? Item, double Fraction) BankRowAtPoint(Point point)
     {
-        for (Visual visual = _animations.InputHitTest(e.GetPosition(_animations)) as Visual; visual != null; visual = visual.GetVisualParent())
+        for (Visual visual = _animations.InputHitTest(point) as Visual; visual != null; visual = visual.GetVisualParent())
         {
             if (visual is ListBoxItem row && visual.DataContext is Item<SceneObject> result)
             {
                 double height = row.Bounds.Height;
-                double y = e.GetPosition(row).Y;
+                double y = _animations.TranslatePoint(point, row)?.Y ?? height / 2;
                 return (result, height > 0 ? Math.Clamp(y / height, 0.0, 1.0) : 0.5);
             }
         }

@@ -95,10 +95,28 @@ public static class CharacterBank
     /// <summary>
     /// Create Ref Pose: a new <c>__RefPose</c> built from the character's current state (the bind
     /// pose with the <c>__RigAnim</c> keys composed on, so a pose made in Paint &amp; Check is kept),
-    /// which becomes the reference pose and the current row. Returns it, or null when unavailable.
+    /// which becomes the reference pose and the current row. <paramref name="posed"/> (Paint &amp;
+    /// Check's runtime pose, <see cref="PoseEvaluator.CheckPoseChanges"/>) replaces the local
+    /// transforms of the controllers it names. Returns it, or null when unavailable.
     /// </summary>
-    public static CharacterPose? CreateRefPose(Character character) =>
-        CanCreateRefPose(character) ? new RestPoseEditor(character).CreateRefPose() : null;
+    public static CharacterPose? CreateRefPose(Character character, IReadOnlyDictionary<Object3D, Transform>? posed = null) =>
+        CanCreateRefPose(character) ? new RestPoseEditor(character).CreateRefPose(posed) : null;
+
+    /// <summary>
+    /// Create Ref Pose from Paint &amp; Check: the new reference pose is exactly the pose
+    /// <paramref name="check"/> shows - every controller's check local, the unposed ones at their
+    /// rest - and Paint &amp; Check stays the current row with its pose, so the view does not jump
+    /// back to the bind pose. Null when unavailable.
+    /// </summary>
+    public static CharacterPose? CreateRefPoseFromCheckPose(Character character, PoseEvaluator check)
+    {
+        if (!CanCreateRefPose(character)) return null;
+        var shown = new Dictionary<Object3D, Transform>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < check.Controllers.Count; i++) shown[check.Controllers[i]] = check.CheckLocal(i);
+        var created = new RestPoseEditor(character).CreateRefPose(shown);
+        if (created != null) character.CurrentPose = null;
+        return created;
+    }
 
     /// <summary>
     /// Delete Ref Pose: the bind pose acts as the reference pose again. The custom pose is removed
@@ -146,9 +164,10 @@ public sealed partial class RestPoseEditor
     /// <summary>
     /// Builds a custom reference pose from the current state of the pose that is the reference
     /// pose now (<see cref="CharacterBank.CreateRefPose"/>); a stale <c>__RefPose</c> child is
-    /// reused and overwritten. Null when there is no reference pose or the schema lacks the class.
+    /// reused and overwritten. <paramref name="posed"/> overrides the named controllers' slots with
+    /// those local transforms. Null when there is no reference pose or the schema lacks the class.
     /// </summary>
-    public CharacterPose? CreateRefPose()
+    public CharacterPose? CreateRefPose(IReadOnlyDictionary<Object3D, Transform>? posed = null)
     {
         if (Character.RefPose is not { } current) return null;
         AktObject source;
@@ -170,7 +189,11 @@ public sealed partial class RestPoseEditor
             source.Set("Name", "__RefPose");
             Character.Source.AddChild(source);
         }
-        source.Set("Matrices", CurrentStateMatrices(current).Select(m => (object?)AktMath.ToArray(m)).ToList());
+        var matrices = CurrentStateMatrices(current);
+        if (posed != null)
+            foreach (var (controller, local) in posed)
+                if (SlotOf(controller) is var slot and >= 0 && slot < matrices.Length) matrices[slot] = local.ToMatrix();
+        source.Set("Matrices", matrices.Select(m => (object?)AktMath.ToArray(m)).ToList());
         var pose = (CharacterPose)Character.Model.Wrap(source);
         Character.CurrentPose = pose;
         Character.RefPose = pose;

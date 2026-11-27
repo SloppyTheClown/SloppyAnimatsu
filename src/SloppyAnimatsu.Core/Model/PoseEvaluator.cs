@@ -89,10 +89,13 @@ public sealed class HermiteKeyInterpolator : IKeyInterpolator
         var m1 = keys.TangentsIn[prev + 1];
         float u2 = u * u, u3 = u2 * u;
         float h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
+        // Scale as a + h01 (b - a) + ... (h00 = 1 - h01): the same curve, but an unchanging
+        // scale with flat tangents stays exactly what the keys hold (h00 + h01 in floats can be
+        // a few ulps off 1, which turned a keyed 1 into 0.99999994 between keys).
         return new Transform(
             h00 * a.Translation + h10 * m0.Translation + h01 * b.Translation + h11 * m1.Translation,
             Squad(a.Rotation, b.Rotation, m0.Rotation, m1.Rotation, u),
-            Vector3.Max(h00 * a.Scale + h10 * m0.Scale + h01 * b.Scale + h11 * m1.Scale, new Vector3(MinScale)));
+            Vector3.Max(a.Scale + h01 * (b.Scale - a.Scale) + h10 * m0.Scale + h11 * m1.Scale, new Vector3(MinScale)));
     }
 
     /// <summary>
@@ -208,13 +211,33 @@ public sealed class PoseEvaluator
     }
     private bool _riggingContext;
 
-    private Transform?[]? _checkPose;
+    /// <summary>
+    /// The check pose's slots in this evaluator's controller order. They live on the character, so
+    /// another evaluator for it (a rebuilt scene pose, a context switch) sees the same pose; a
+    /// controller list that changed is matched by controller, and the scene's saved pose is read the
+    /// first time.
+    /// </summary>
+    private Transform?[]? _checkPose
+    {
+        get
+        {
+            if (CheckPoseStore.Read(Character) is not { } slots) return null;
+            if (!Character.ControllersMatch(slots.Controllers))
+                Character.CheckPose = slots = slots.Remap(Character.Controllers);
+            return slots.Values;
+        }
+        set
+        {
+            Character.CheckPoseRead = true;
+            Character.CheckPose = value == null ? null : new CheckPoseSlots(Character.Controllers.ToArray(), value);
+        }
+    }
 
     /// <summary>
     /// Paint &amp; Check's runtime pose: per-controller local transforms that replace the rest pose
-    /// when no animation is evaluated, so the bound skin can be posed to check its weights. The scene
-    /// keeps nothing of it, and neither does this: it lives only
-    /// in this evaluator, is never written to the scene and is cleared by <see cref="ClearCheckPose"/>.
+    /// when no animation is evaluated, so the bound skin can be posed to check its weights. It is kept
+    /// per character across context switches and saved with the scene (<see cref="CheckPoseStore"/>),
+    /// but never written to the rig, and is cleared by <see cref="ClearCheckPose"/>.
     /// </summary>
     public bool HasCheckPose => _checkPose != null;
 
@@ -227,9 +250,25 @@ public sealed class PoseEvaluator
     /// <summary>Sets (or, with null, drops) controller <paramref name="index"/>'s check-pose value.</summary>
     public void SetCheckLocal(int index, Transform? local)
     {
-        if (local == null && _checkPose == null) return;
-        _checkPose ??= new Transform?[Controllers.Count];
-        _checkPose[index] = local;
+        var check = _checkPose;
+        if (local == null && check == null) return;
+        if (check == null) _checkPose = check = new Transform?[Controllers.Count];
+        check[index] = local;
+    }
+
+    /// <summary>
+    /// Starts the check pose from <paramref name="pose"/> (a custom reference pose): every slot whose
+    /// matrix differs from the rest pose becomes a check value, so Paint &amp; Check opens on the pose
+    /// the animations are built on rather than the bind pose. Nothing is set when it matches.
+    /// </summary>
+    public void StartCheckPoseFrom(CharacterPose pose)
+    {
+        for (int i = 0; i < Controllers.Count && i < pose.Count; i++)
+        {
+            var m = pose.Matrix(i);
+            if (AktMath.MaxDifference(m, RestTransforms[i].ToMatrix()) <= 1e-5f) continue;
+            if (Transform.TryFromMatrix(m, out var t)) SetCheckLocal(i, t);
+        }
     }
 
     /// <summary>Drops the whole check pose; the rest pose shows again.</summary>
@@ -242,7 +281,6 @@ public sealed class PoseEvaluator
     /// <summary>Reads <see cref="RestTransforms"/> again, after the rest pose was edited.</summary>
     public void ReloadRestPose()
     {
-        if (_checkPose != null && _checkPose.Length != Controllers.Count) _checkPose = null;
         SyncControllers();
         LoadRestTransforms();
         Invalidate();
@@ -273,7 +311,6 @@ public sealed class PoseEvaluator
         _controllerIndex.Clear();
         for (int i = 0; i < list.Count; i++) _controllerIndex.TryAdd(list[i], i);
         RestTransforms = new Transform[list.Count];
-        _checkPose = null;
         LoadRestTransforms();
         _ikSolveOrder = null;
         Invalidate();
@@ -391,6 +428,175 @@ public sealed class PoseEvaluator
             anySpace |= space[i] != null;
         }
         return ComposeWorlds(local, space, anySpace, animation, time, out worldMatrices);
+    }
+
+    /// <summary>
+    /// A copy of the check pose's values (null when there is none), for undo and cancel. The
+    /// reverse feet's angles ride along with the copy (<see cref="CopiedFootAngles"/>), so
+    /// <see cref="RestoreCheckPose"/> puts them back too without changing what callers hold.
+    /// </summary>
+    public Transform?[]? CheckPoseValues()
+    {
+        if (_checkPose is not { } check) return null;
+        var copy = (Transform?[])check.Clone();
+        if (Character.CheckPose is { FootAngles.Count: > 0 } slots)
+            CopiedFootAngles.AddOrUpdate(copy, new Dictionary<Object3D, Vector3>(slots.FootAngles, ReferenceEqualityComparer.Instance));
+        return copy;
+    }
+
+    /// <summary>Puts back values from <see cref="CheckPoseValues"/>; a copy for another controller list is dropped.</summary>
+    public void RestoreCheckPose(Transform?[]? values)
+    {
+        _checkPose = values != null && values.Length == Controllers.Count ? (Transform?[])values.Clone() : null;
+        if (Character.CheckPose is { } slots && values != null && CopiedFootAngles.TryGetValue(values, out var angles))
+            foreach (var (foot, a) in angles) slots.FootAngles[foot] = a;
+    }
+
+    /// <summary>The reverse-foot angles that went with each <see cref="CheckPoseValues"/> copy.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Transform?[], Dictionary<Object3D, Vector3>> CopiedFootAngles = new();
+
+    /// <summary>A reverse foot's roll, twist and bank (radians) in the check pose; zero when it was not set.</summary>
+    public Vector3 CheckFootAngles(ControllerReverseFoot foot) =>
+        _checkPose != null && Character.CheckPose is { } slots && slots.FootAngles.TryGetValue(foot, out var a) ? a : Vector3.Zero;
+
+    /// <summary>
+    /// Sets a reverse foot's roll, twist and bank (radians) in the check pose: its shoe locators take
+    /// the turned locals, and the leg is solved toward them. False when the foot has no full shoe.
+    /// </summary>
+    public bool SetCheckFootAngles(ControllerReverseFoot foot, Vector3 angles)
+    {
+        var shoe = foot.Shoe;
+        if (shoe.Count < 7) return false;
+        var shoeIndices = shoe.Take(7).Select(IndexOf).ToArray();
+        if (shoeIndices.Any(i => i < 0)) return false;
+        var rest = shoeIndices.Select(i => RestTransforms[i]).ToArray();
+        var axis = foot.RollAxisPlant;
+        var locals = ReverseFootSolver.ShoeLocals(rest, angles.X, angles.Y, angles.Z,
+            ReverseFootLimits.FromScene(Character.Model.Scene), new Vector3(axis.X, axis.Y, axis.Z));
+        for (int j = 0; j < 7; j++) SetCheckLocal(shoeIndices[j], locals[j]);
+        _ = _checkPose; // matches the stored slots to the controller list before the angles go in
+        Character.CheckPose!.FootAngles[foot] = angles;
+        FollowCheckPose(foot);
+        Invalidate();
+        return true;
+    }
+
+    /// <summary>
+    /// Carries a check-pose change on <paramref name="changed"/> through the IK rig, the way posing
+    /// works while animating: an IK or reverse-foot controller that moved (itself or an ancestor)
+    /// re-solves its chain, and a chain that moved (one of its joints or an ancestor of its first
+    /// joint) takes its controller along - an IK controller keeps its rest offset to the chain's last
+    /// joint, a reverse foot to the ankle. Controllers are visited in solve order, so whatever one
+    /// of them moves is seen by the ones after it.
+    /// </summary>
+    /// <param name="keepInPlace">An IK controller left where it is (a swivel turns its own chain about it).</param>
+    public void FollowCheckPose(Object3D changed, ControllerIK? keepInPlace = null)
+    {
+        if (_checkPose == null || !SolveIK) return;
+        int n = Controllers.Count;
+        var check = _checkPose;
+        var moved = new HashSet<Object3D>(ReferenceEqualityComparer.Instance) { changed };
+        bool Moved(Object3D? o)
+        {
+            for (; o != null; o = o.Parent3D)
+                if (moved.Contains(o)) return true;
+            return false;
+        }
+        Transform[] Locals()
+        {
+            var local = new Transform[n];
+            for (int i = 0; i < n; i++) local[i] = check[i] ?? RestTransforms[i];
+            return local;
+        }
+        Matrix4x4[]? restWorlds = null;
+
+        foreach (var controller in IKSolveOrder)
+        {
+            var chain = controller.Chain;
+            if (chain.Count == 0 || ReferenceEquals(controller, keepInPlace)) continue;
+            var indices = chain.Select(IndexOf).ToArray();
+            int target = IndexOf(controller);
+            if (target < 0 || indices.Any(i => i < 0)) continue;
+            bool jointPosed = chain.Any(moved.Contains);
+            bool chainMoved = jointPosed || Moved(chain[0].Parent3D);
+            bool controllerMoved = Moved(controller);
+
+            var local = Locals();
+            ComposeWorlds(local, new Object3D?[n], false, null, 0f, out var worlds);
+            if (controllerMoved && !jointPosed)
+            {
+                var solved = SolveCheckChain(controller, chain, indices, local, worlds);
+                if (solved == null) continue;
+                for (int j = 0; j < indices.Length; j++) check[indices[j]] = solved[j];
+                foreach (var joint in chain) moved.Add(joint);
+            }
+            else if (chainMoved && !controllerMoved)
+            {
+                // The controller keeps its rest placement relative to its anchor joint.
+                int anchor = controller is ControllerReverseFoot && indices.Length > 2 ? indices[2] : indices[^1];
+                restWorlds ??= RestWorlds();
+                if (!Matrix4x4.Invert(restWorlds[anchor], out var inverseAnchor)) continue;
+                var world = restWorlds[target] * inverseAnchor * worlds[anchor];
+                var parent = controller.Parent3D;
+                int p = parent != null ? IndexOf(parent) : -1;
+                var (parentWorld, parentScale) = parent == null ? (Matrix4x4.Identity, Vector3.One)
+                    : p >= 0 ? (worlds[p], local[p].Scale)
+                    : (parent.WorldMatrix, Object3D.LocalScale(parent.LocalMatrix));
+                if (!WorldComposition.TryDecompose(world, parentWorld, parentScale, Compensates(controller, null, 0f), out var m)
+                    || !Transform.TryFromMatrix(m, out var t)) continue;
+                check[target] = t;
+                moved.Add(controller);
+            }
+        }
+    }
+
+    /// <summary>The controllers' world matrices in the rest pose alone (no animation, no check pose).</summary>
+    public Matrix4x4[] RestWorldMatrices() => RestWorlds();
+
+    private Matrix4x4[] RestWorlds()
+    {
+        ComposeWorlds((Transform[])RestTransforms.Clone(), new Object3D?[RestTransforms.Length], false, null, 0f, out var worlds);
+        return worlds;
+    }
+
+    /// <summary>The chain of <paramref name="controller"/> solved toward it in the check pose, or null.</summary>
+    private Transform[]? SolveCheckChain(ControllerIK controller, IReadOnlyList<Object3D> chain, int[] indices,
+        Transform[] local, Matrix4x4[] worlds)
+    {
+        var parent = chain[0].Parent3D;
+        int p = parent != null ? IndexOf(parent) : -1;
+        var (baseWorld, baseScale) = parent == null ? (Matrix4x4.Identity, Vector3.One)
+            : p >= 0 ? (worlds[p], local[p].Scale)
+            : (parent.WorldMatrix, Object3D.LocalScale(parent.LocalMatrix));
+        var chainLocal = indices.Select(i => local[i]).ToArray();
+        var compensates = chain.Select(j => Compensates(j, null, 0f)).ToArray();
+        if (controller is not ControllerReverseFoot rf)
+            return IKSolver.Solve(baseWorld, baseScale, chainLocal, worlds[IndexOf(controller)], compensates, ExactScaleIK);
+
+        // A reverse foot is solved toward its shoe locators, which ride under the controller.
+        var shoe = rf.Shoe;
+        if (shoe.Count < 7 || chainLocal.Length != 4) return null;
+        var shoeIndices = shoe.Take(7).Select(IndexOf).ToArray();
+        if (shoeIndices.Any(i => i < 0)) return null;
+        return ReverseFootSolver.Solve(baseWorld, baseScale, chainLocal, compensates,
+            RestTransforms[indices[3]], RestTransforms[shoeIndices[ReverseFootSolver.SkeletonPlant]],
+            worlds[shoeIndices[ReverseFootSolver.SkeletonAnkle]], worlds[shoeIndices[ReverseFootSolver.SkeletonPlant]],
+            worlds[shoeIndices[ReverseFootSolver.SkeletonToes]], ExactScaleIK);
+    }
+
+    /// <summary>
+    /// The posed local transforms of Paint &amp; Check's runtime pose that differ from the rest pose,
+    /// keyed by controller. Empty when there is no check pose.
+    /// </summary>
+    public Dictionary<Object3D, Transform> CheckPoseChanges()
+    {
+        var changes = new Dictionary<Object3D, Transform>(ReferenceEqualityComparer.Instance);
+        if (_checkPose == null) return changes;
+        for (int i = 0; i < _checkPose.Length; i++)
+            // Below 1e-5 a difference is float noise from a solve, not a pose change.
+            if (_checkPose[i] is { } posed && AktMath.MaxDifference(posed.ToMatrix(), RestTransforms[i].ToMatrix()) > 1e-5f)
+                changes[Controllers[i]] = posed;
+        return changes;
     }
 
     /// <summary>

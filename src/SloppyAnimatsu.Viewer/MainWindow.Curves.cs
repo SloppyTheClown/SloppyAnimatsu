@@ -108,10 +108,11 @@ public sealed partial class MainWindow
         {
             Button button2 = new Button
             {
-                Content = (unified ? "Unify" : "Break"),
-                Padding = new Thickness(8.0, 2.0),
+                Padding = new Thickness(5.0, 2.0),
                 Margin = new Thickness(0.0, 0.0, 2.0, 2.0)
             };
+            PanelIcons.Apply(button2, unified ? "Unify tangents" : "Break tangents",
+                unified ? PanelIcons.UnifyTangents() : PanelIcons.BreakTangents(), 14.0);
             button2.Click += delegate
             {
                 RunCurveEdit((PoseEditSession session, AnimStack stack, IReadOnlyCollection<CurveKeySelection> selection) => session.SetTangentsUnified(stack, selection, unified, _curveboard.Displayed));
@@ -121,10 +122,10 @@ public sealed partial class MainWindow
         }
         Button button3 = new Button
         {
-            Content = "Fit (F)",
-            Padding = new Thickness(8.0, 2.0),
+            Padding = new Thickness(5.0, 2.0),
             Margin = new Thickness(12.0, 0.0, 8.0, 2.0)
         };
+        PanelIcons.Apply(button3, "Fit (F)", PanelIcons.FitCurves(), 14.0);
         button3.Click += delegate
         {
             _curveboard.Fit();

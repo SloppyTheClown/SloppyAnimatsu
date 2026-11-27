@@ -66,8 +66,68 @@ public sealed partial class RestPoseEditor
     {
         if (!CanEdit(controller, out var reason)) throw new InvalidOperationException(reason);
         EnsureEditableRefPose();
+        var feetBefore = AkeytsuParity ? null : ReverseFootWorlds(controller);
         EditedPose!.SetMatrix(SlotOf(controller), local.ToMatrix());
-        ForwardPoseModification(controller);
+        ForwardPoseModification(controller, feetBefore);
+    }
+
+    /// <summary>
+    /// Writes several local rest transforms at once - IK-chain joints included, which
+    /// <see cref="CanEdit"/> refuses one by one because their controller drives them - and then
+    /// carries every IK controller and reverse foot whose anchor joint moved, keeping its rest offset
+    /// to that joint (the last chain joint, a reverse foot's ankle), the way Paint &amp; Check does.
+    /// Used to give a linked character another character's ref-pose change. Returns the slots written.
+    /// </summary>
+    public int SetLocalsCarryingIK(IReadOnlyDictionary<Object3D, Transform> locals)
+    {
+        if (EditedPose == null) return 0;
+        EnsureEditableRefPose();
+        if (EditedPose is not { } pose) return 0;
+        var rig = new RigEditor(Character);
+        var carried = new List<(ControllerIK Controller, Matrix4x4 World, Matrix4x4 Anchor)>();
+        foreach (var controller in Character.Controllers.OfType<ControllerIK>())
+        {
+            if (controller.Chain.Count == 0 || SlotOf(controller) < 0 || locals.ContainsKey(controller)) continue;
+            var anchor = IKAnchor(controller);
+            if (!locals.Keys.Any(edited => IsBelow(anchor, edited))) continue;
+            carried.Add((controller, rig.WorldInPose(pose, controller), rig.WorldInPose(pose, anchor)));
+        }
+        int written = 0;
+        foreach (var (controller, local) in locals)
+        {
+            int slot = SlotOf(controller);
+            if (slot < 0 || slot >= pose.Count) continue;
+            pose.SetMatrix(slot, local.ToMatrix());
+            written++;
+        }
+        foreach (var (controller, world, anchorBefore) in carried)
+        {
+            if (!Matrix4x4.Invert(anchorBefore, out var toAnchor)) continue;
+            var after = world * toAnchor * rig.WorldInPose(pose, IKAnchor(controller));
+            var parentWorld = controller.Parent3D is { } parent ? rig.WorldInPose(pose, parent) : Matrix4x4.Identity;
+            if (!Matrix4x4.Invert(parentWorld, out var toParent)) continue;
+            pose.SetMatrix(SlotOf(controller), after * toParent);
+        }
+        return written;
+    }
+
+    /// <summary>The joint an IK controller keeps its offset to: a reverse foot's ankle, else the chain's last joint.</summary>
+    private static Object3D IKAnchor(ControllerIK controller) =>
+        controller is ControllerReverseFoot && controller.Chain.Count > 2 ? controller.Chain[2] : controller.Chain[^1];
+
+    /// <summary>
+    /// Before an edit of <paramref name="edited"/>: the rest world of every reverse foot whose chain
+    /// runs below it and of that chain's leaf, so the foot can be carried with the leg afterwards.
+    /// </summary>
+    private Dictionary<ControllerReverseFoot, (Matrix4x4 Foot, Matrix4x4 Leaf)>? ReverseFootWorlds(Object3D edited)
+    {
+        if (EditedPose is not { } pose) return null;
+        var rig = new RigEditor(Character);
+        var result = new Dictionary<ControllerReverseFoot, (Matrix4x4, Matrix4x4)>(ReferenceEqualityComparer.Instance);
+        foreach (var foot in Character.Controllers.OfType<ControllerReverseFoot>())
+            if (foot.Chain.Count > 0 && SlotOf(foot) >= 0 && foot.Chain.Any(joint => IsBelow(joint, edited)))
+                result[foot] = (rig.WorldInPose(pose, foot), rig.WorldInPose(pose, foot.Chain[^1]));
+        return result;
     }
 
     /// <summary>
@@ -147,7 +207,8 @@ public sealed partial class RestPoseEditor
     /// rest move of Root put <c>IK_Hand_R</c>'s slot at exactly 400. See
     /// <see cref="RefitReverseFoot"/> for what the reverse foot does.
     /// </summary>
-    private void ForwardPoseModification(Object3D edited)
+    private void ForwardPoseModification(Object3D edited,
+        Dictionary<ControllerReverseFoot, (Matrix4x4 Foot, Matrix4x4 Leaf)>? feetBefore = null)
     {
         if (EditedPose is not { } pose) return;
         var rig = new RigEditor(Character);
@@ -158,7 +219,14 @@ public sealed partial class RestPoseEditor
             if (!controller.Chain.Any(joint => IsBelow(joint, edited))) continue;
             if (controller is ControllerReverseFoot foot)
             {
-                RefitReverseFoot(pose, foot, rig, inverseCharacter);
+                // The chain joints are constrained, so an edit above them moves the ankle and the
+                // ball together and the foot keeps its shape. The whole shoe is carried rigidly with
+                // the chain's leaf, so it stays on the foot in the rest pose and keeps its rest offset
+                // from the leaf - the offset an unpinned handle is drawn at. The akeytsu-parity mode
+                // leaves the controller where it was and re-fits the shoe's skeleton locators instead.
+                if (AkeytsuParity) RefitReverseFoot(pose, foot, rig, inverseCharacter);
+                else if (feetBefore != null && feetBefore.TryGetValue(foot, out var before))
+                    CarryWithLeaf(pose, foot, before.Foot, before.Leaf, rig);
                 continue;
             }
             var leaf = controller.Chain[^1];
@@ -204,6 +272,20 @@ public sealed partial class RestPoseEditor
             if (!Matrix4x4.Invert(parentWorld, out var inverse)) return;
             pose.SetMatrix(SlotOf(foot.Shoe[index]), target * inverse);
         }
+    }
+
+    /// <summary>
+    /// Moves <paramref name="foot"/>'s slot so its rest world keeps its offset from the chain's leaf:
+    /// <c>footWorld' = footWorld * leafWorld^-1 * leafWorld'</c>, written as a local under its parent.
+    /// </summary>
+    private void CarryWithLeaf(CharacterPose pose, ControllerReverseFoot foot, Matrix4x4 footBefore, Matrix4x4 leafBefore,
+        RigEditor rig)
+    {
+        if (!Matrix4x4.Invert(leafBefore, out var toLeaf)) return;
+        var footAfter = footBefore * toLeaf * rig.WorldInPose(pose, foot.Chain[^1]);
+        var parentWorld = foot.Parent3D is { } parent ? rig.WorldInPose(pose, parent) : Matrix4x4.Identity;
+        if (!Matrix4x4.Invert(parentWorld, out var toParent)) return;
+        pose.SetMatrix(SlotOf(foot), footAfter * toParent);
     }
 
     /// <summary><paramref name="world"/> with its translation replaced by <paramref name="position"/> (a rigid frame).</summary>
@@ -323,10 +405,42 @@ public sealed partial class RestPoseEditor
                 old.CopyMatricesFrom(current);
                 break;
             case RestPoseResolution.ReturnToPrevious:
-                current.CopyMatricesFrom(old);
+                ReturnToPreviousRefPose(current, old);
                 break;
         }
         return converted;
+    }
+
+    /// <summary>
+    /// Return to Previous Ref Pose: the previous pose is the reference pose again, and the edited
+    /// pose is removed (a bind pose is never removed). When the previous pose holds a bind pose's
+    /// matrices - the bind pose acted as the reference pose - that bind pose takes the role back and
+    /// the copy is removed too, so no separate Ref Pose row is left behind. A previous pose no longer
+    /// in the scene is copied over the edited one instead.
+    /// </summary>
+    private void ReturnToPreviousRefPose(CharacterPose current, CharacterPose old)
+    {
+        if (old.Source.Parent == null)
+        {
+            current.CopyMatricesFrom(old);
+            return;
+        }
+        var target = Character.BindPoses.FirstOrDefault(b => ReferenceEquals(b, old))
+            ?? Character.BindPoses.FirstOrDefault(b => SameMatrices(b, old)) ?? old;
+        Character.RefPose = target;
+        if (Character.Source.Has("RefPoseOld")) Character.RefPoseOld = target;
+        if (ReferenceEquals(Character.CurrentPose, current) || ReferenceEquals(Character.CurrentPose, old)) Character.CurrentPose = target;
+        foreach (var pose in new[] { current, old })
+            if (!ReferenceEquals(pose, target) && !Character.BindPoses.Any(b => ReferenceEquals(b, pose)))
+                pose.Source.Parent?.RemoveChild(pose.Source);
+    }
+
+    private static bool SameMatrices(CharacterPose a, CharacterPose b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (AktMath.MaxDifference(a.Matrix(i), b.Matrix(i)) > Tolerance) return false;
+        return true;
     }
 
     /// <summary>
@@ -343,8 +457,9 @@ public sealed partial class RestPoseEditor
     /// <para>
     /// Two target kinds are special: a reverse-foot
     /// **shoe locator**'s track is not converted at all (the app leaves it byte-for-byte, although
-    /// its ref-pose slots move), and a reverse foot's own track is rebased by
-    /// <see cref="ConvertReverseFoot"/>.
+    /// its ref-pose slots move), and a reverse foot's own track keeps its animated world
+    /// (<see cref="KeepReverseFootInPlace"/>, or <see cref="ConvertReverseFoot"/> under
+    /// <see cref="AkeytsuParity"/>), with the shoe's skeleton locators restored.
     /// </para>
     /// </summary>
     private int ConvertAnimations(CharacterPose current, CharacterPose old)
@@ -368,20 +483,71 @@ public sealed partial class RestPoseEditor
                     if (target is ReverseFootLocator) continue;
                     if (target is ControllerReverseFoot foot)
                     {
-                        ConvertReverseFoot(current, old, track, foot, rig, inverseOldCharacter, inverseNewCharacter);
+                        if (AkeytsuParity)
+                            ConvertReverseFoot(current, old, track, foot, rig, inverseOldCharacter, inverseNewCharacter);
+                        else
+                            count += KeepReverseFootInPlace(track, b.Old, b.New);
                         continue;
                     }
                     if (!IsConvertedTrack(Character.Model, track)) continue;
-                    foreach (var key in track.Keys.OfType<TransformKey>())
-                    {
-                        key.Value = PoseEvaluator.Decompose(b.New, PoseEvaluator.Compose(b.Old, key.Value));
-                        count++;
-                    }
-                    TangentRecompute.Recompute(track);
+                    count += RebaseTrack(track, b.Old, b.New, AkeytsuParity);
                 }
             }
         return count;
     }
+
+    /// <summary>
+    /// Off by default. True keeps the akeytsu-style conversion for comparison: every edit above a
+    /// reverse foot re-fits the shoe's skeleton locators onto the new rest leg
+    /// (<see cref="RefitReverseFoot"/>), the conversion rebases the reverse-foot keys by the chain
+    /// leaf's rest change (<see cref="ConvertReverseFoot"/>), and every converted track - also one
+    /// whose rest did not change - gets its tangents recomputed. All three change the animation:
+    /// a 400-unit Root move put every pinned foot handle 400 units off, folded the legs between
+    /// pinned keys, and bent the in-betweens of tracks whose stored tangents differ from computed
+    /// ones. False keeps every animated world where it was, keys and in-betweens.
+    /// </summary>
+    public bool AkeytsuParity { get; init; }
+
+    /// <summary>
+    /// Rebases one track's keys from <paramref name="oldBase"/> to <paramref name="newBase"/>:
+    /// <c>key' = Decompose(new, Compose(old, key))</c>. Without <paramref name="recomputeTangents"/>
+    /// the stored tangents are carried over, which keeps every in-between exactly: the rebase adds a
+    /// constant translation (tangents unchanged), left-multiplies the rotation by a constant (the
+    /// rotation tangents are log vectors in the key's own frame, so SQUAD's result is
+    /// left-multiplied by the same constant) and multiplies the scale by a constant (the scale
+    /// tangents take the same factor). A track whose base did not change is left alone.
+    /// Returns the number of keys rewritten.
+    /// </summary>
+    private static int RebaseTrack(AnimTrack track, Transform oldBase, Transform newBase, bool recomputeTangents)
+    {
+        if (!recomputeTangents && AktMath.MaxDifference(oldBase.ToMatrix(), newBase.ToMatrix()) <= Tolerance) return 0;
+        int count = 0;
+        foreach (var key in track.Keys.OfType<TransformKey>())
+        {
+            key.Value = PoseEvaluator.Decompose(newBase, PoseEvaluator.Compose(oldBase, key.Value));
+            count++;
+        }
+        if (recomputeTangents)
+        {
+            TangentRecompute.Recompute(track);
+            return count;
+        }
+        var scaleFactor = oldBase.Scale / newBase.Scale;
+        foreach (var tangent in track.TangentsIn.Concat(track.TangentsOut).OfType<TransformKey>())
+            tangent.Value = tangent.Value with { Scale = tangent.Value.Scale * scaleFactor };
+        return count;
+    }
+
+    /// <summary>
+    /// The reverse foot's keys after a ref-pose change, keeping the animation as it looked: the key
+    /// is a local offset from the controller's own ref slot, so it takes the generic rebase
+    /// (<see cref="RebaseTrack"/>, tangents carried). <c>RefArray</c> needs nothing: entries 0..3
+    /// are the leg joints' full locals, which the joint keys' conversion preserves, and entry 4 is
+    /// the controller relative to the ball's animated world, which is preserved too. Returns the
+    /// number of keys rewritten.
+    /// </summary>
+    private static int KeepReverseFootInPlace(AnimTrack track, Transform oldBase, Transform newBase) =>
+        RebaseTrack(track, oldBase, newBase, recomputeTangents: false);
 
     /// <summary>
     /// A reverse-foot track's keys are not rewritten by the generic formula: the shoe is fitted to

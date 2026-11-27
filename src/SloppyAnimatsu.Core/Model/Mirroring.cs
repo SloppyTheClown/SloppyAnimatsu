@@ -246,17 +246,24 @@ public sealed partial class KeyEditor
         Transform before, Transform after)
     {
         if (children.Count == 0 || !Matrix4x4.Invert(after.ToMatrix(), out _)) return 0;
-        // Row-vector terms: childLocal' = childLocal * (before * after⁻¹).
-        var delta = before.ToMatrix() * Inverse(after.ToMatrix());
         int count = 0;
         foreach (var (child, local) in children)
         {
             if (stack.TrackFor(child) is not { } track) continue;
-            SetKey(stack, keyIndex, child, Transform.FromMatrixLoose(local.ToMatrix() * delta), track.Channels);
+            SetKey(stack, keyIndex, child, KeptChildLocal(local, before, after), track.Channels);
             count++;
         }
         return count;
     }
+
+    /// <summary>
+    /// The local a direct child takes so that it stays where it was in the world while its parent's
+    /// local goes from <paramref name="before"/> to <paramref name="after"/>. Every pose layer's
+    /// Keep children fixed (keys, the rest pose, Paint &amp; Check's pose) goes through this.
+    /// </summary>
+    public static Transform KeptChildLocal(Transform childLocal, Transform before, Transform after) =>
+        // Row-vector terms: childLocal' = childLocal * (before * after⁻¹).
+        Transform.FromMatrixLoose(childLocal.ToMatrix() * before.ToMatrix() * Inverse(after.ToMatrix()));
 
     /// <summary>The rest transform of <paramref name="o"/>, or identity when it is not a controller.</summary>
     private Transform RestOf(Object3D o)
@@ -466,14 +473,13 @@ public sealed partial class RestPoseEditor
         IReadOnlyList<(Object3D Child, Transform Local)>? children = null)
     {
         if (!Matrix4x4.Invert(after.ToMatrix(), out _)) return 0;
-        var delta = before.ToMatrix() * Inverse(after.ToMatrix());
         var todo = children ?? parent.Children.OfType<Object3D>()
             .Select(c => (Child: c, Local: SlotOf(c) >= 0 ? GetLocal(c) : Transform.Identity)).ToArray();
         int count = 0;
         foreach (var (child, local) in todo)
         {
             if (SlotOf(child) < 0 || !CanEdit(child, out _)) continue;
-            SetLocal(child, Transform.FromMatrixLoose(local.ToMatrix() * delta));
+            SetLocal(child, KeyEditor.KeptChildLocal(local, before, after));
             count++;
         }
         return count;
